@@ -23,7 +23,8 @@ dependencies = ["websockets>=13"]
 
 [project.urls]
 Homepage = "https://wbskt.com"
-Source = "https://github.com/wbskt/Wbskt/tree/master/Clients/python"
+Source = "https://github.com/wbskt/Wbskt.Python"
+Issues = "https://github.com/wbskt/Wbskt.Python/issues"
 Protocol = "https://github.com/wbskt/Wbskt/blob/master/Docs/Client.Protocol.md"
 
 [project.optional-dependencies]
