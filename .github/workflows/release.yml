@@ -12,7 +12,30 @@ permissions:
   contents: read
 
 jobs:
+  # Fails in seconds, before the suites run, for a tag that names the wrong version or a commit
+  # that isn't on master. A version can't be replaced once it is on PyPI.
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the tag matches the package version
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/wbskt/version.py)"
+          if [[ "v$version" != "${GITHUB_REF_NAME}" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version $version"
+            exit 1
+          fi
+      - name: Check the tagged commit is on master
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::${GITHUB_REF_NAME} points at a commit that is not on master"
+            exit 1
+          fi
+
   checks:
+    needs: tag
     uses: ./.github/workflows/ci.yml
 
   publish:
@@ -26,12 +49,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Check the tag matches the package version
-        run: |
-          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/wbskt/version.py)"
-          if [[ "v$version" != "${GITHUB_REF_NAME}" ]]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match version $version"
-            exit 1
-          fi
       - run: pip install build twine && python -m build && twine check --strict dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
