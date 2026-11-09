@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/wbskt/Wbskt.Python/master/assets/icon.png" alt="" width="64" height="64">
+
 # wbskt
 
 Connect a Raspberry Pi, a script or a service to [Wbskt](https://wbskt.com). The client registers
