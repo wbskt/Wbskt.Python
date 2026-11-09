@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The oldest supported Python with the oldest supported websockets, and the newest of both.
+        include:
+          - python: '3.10'
+            websockets: 'websockets==13.0'
+          - python: '3.13'
+            websockets: 'websockets'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e '.[test]' '${{ matrix.websockets }}'
+      - run: python -m pytest -q
+
+  conformance:
+    # The client protocol checklist (Tests/Conformance in wbskt/Wbskt), run against this SDK
+    # through conformance/harness.py.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: wbskt/Wbskt
+          path: wbskt
+          sparse-checkout: Tests/Conformance
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Run the suite
+        working-directory: wbskt/Tests/Conformance
+        run: |
+          pip install -r requirements.txt
+          pip install -e "$GITHUB_WORKSPACE"
+          WBSKT_HARNESS="python $GITHUB_WORKSPACE/conformance/harness.py" python -m pytest -v

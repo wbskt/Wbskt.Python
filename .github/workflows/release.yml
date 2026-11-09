@@ -1,0 +1,37 @@
+name: Release
+
+# On a tag v<version>, checks the SDK again, then builds it and publishes it to PyPI as `wbskt`
+# through trusted publishing: the PyPI project must trust this repository, this workflow and the
+# `pypi` environment. No token is stored.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check the tag matches the package version
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/wbskt/version.py)"
+          if [[ "v$version" != "${GITHUB_REF_NAME}" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version $version"
+            exit 1
+          fi
+      - run: pip install build twine && python -m build && twine check --strict dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
