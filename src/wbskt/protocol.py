@@ -1,4 +1,4 @@
-"""The client protocol's names and limits (Docs/Client.Protocol.md). Mirrors Clients/Wbskt.Protocol."""
+"""The client protocol's names and limits (Docs/Client.Protocol.md in wbskt/Wbskt)."""
 
 SUBPROTOCOL = "wbskt.v1"
 MAX_MESSAGE_BYTES = 64 * 1024

@@ -1,6 +1,6 @@
 """The Python client: register once, keep a token, hold the socket open, and come back after a drop.
 
-Follows Docs/Client.Protocol.md; the .NET SDK (wbskt/Wbskt.DotNet) is the reference implementation.
+Follows Docs/Client.Protocol.md in wbskt/Wbskt; its conformance suite (Tests/Conformance) checks this client.
 """
 
 import asyncio
