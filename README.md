@@ -16,13 +16,16 @@ it speaks may still change before 1.0.
 ## Quick start
 
 ```python
+import time
 from wbskt import WbsktClient
 
 client = WbsktClient("greenhouse-sensor", policy_pin="483920")
 client.on_message = lambda message: print("got", message.type, message.payload)
 client.start()
 
-client.send("temperature", {"celsius": 21.5})
+while True:
+    client.send("temperature", {"celsius": read_sensor()})
+    time.sleep(10)
 ```
 
 Get the PIN from a registration policy in the console (**Policies**). The first run registers the
@@ -30,7 +33,10 @@ client and stores its credentials in your user data folder (`~/.local/share/wbsk
 Linux), so later runs sign in without registering again. If the policy needs approval, the client
 waits and connects once someone approves it in the console.
 
-To keep a script running until Ctrl+C, call `client.run_forever()` instead of `start()`.
+`start()` returns once the first connection attempt has finished; a failed one is retried in the
+background. The client runs on a daemon thread, so it stops when your script ends: keep the script
+running for as long as the client should stay connected. A script with nothing else to do calls
+`client.run_forever()` instead of `start()`, which blocks until Ctrl+C.
 
 ## asyncio
 
@@ -46,6 +52,7 @@ async def main():
 
     client.on_message = handle
     await client.start()
+    await client.wait_first_attempt()  # optional: start() only begins connecting
     while True:
         await client.send("temperature", {"celsius": read_sensor()})
         await asyncio.sleep(10)
