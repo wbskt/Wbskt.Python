@@ -22,8 +22,8 @@ class FileStorage:
     """Credentials in a JSON file, so the client registers once and signs in with them afterwards.
 
     The file is ``{"clientRefId": ..., "secret": ...}``, the same file the .NET SDK writes at the same
-    path, so a client moved from one SDK to the other keeps its credentials. A file the .NET SDK wrote
-    before 0.9.0-beta.2 (``RefId``, ``Secret``) is read too.
+    path, so a client moved from one SDK to the other keeps its credentials. A file an older .NET SDK
+    wrote (``RefId``, ``Secret``) is read too.
     """
 
     def __init__(self, path) -> None:
@@ -37,28 +37,36 @@ class FileStorage:
 
     def load(self) -> Credentials:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
             ref_id = data["clientRefId"] if "clientRefId" in data else data["RefId"]
             secret = data["secret"] if "secret" in data else data["Secret"]
-            return str(ref_id), str(secret)
         except (OSError, ValueError, KeyError, TypeError):
             return None, None
+        if not isinstance(ref_id, str) or not isinstance(secret, str) or not ref_id or not secret:
+            return None, None
+        return ref_id, secret
 
     def save(self, client_ref_id: str, secret: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"clientRefId": client_ref_id, "secret": secret}), encoding="utf-8")
+        tmp = self.path.with_name(self.path.name + ".tmp")
         try:
-            os.chmod(tmp, 0o600)
-        except OSError:
+            tmp.unlink()
+        except FileNotFoundError:
             pass
+        # Created readable by this user only, so the secret is never on disk with wider permissions.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"clientRefId": client_ref_id, "secret": secret}))
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self.path)
 
     def clear(self) -> None:
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        for path in (self.path, self.path.with_name(self.path.name + ".tmp")):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 class MemoryStorage:
