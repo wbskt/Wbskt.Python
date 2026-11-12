@@ -37,3 +37,13 @@ def test_client_names_become_safe_file_names(tmp_path, monkeypatch):
     path = FileStorage.for_client('pi/kitchen:"1"').path
 
     assert path.name == "pi_kitchen__1_.json"
+
+
+def test_a_file_the_dotnet_sdk_wrote_is_read(tmp_path):
+    current = tmp_path / "current.json"
+    older = tmp_path / "older.json"
+    current.write_text('{"clientRefId":"5c0d6c8e-1f2a-4b3c-9d4e-5f6a7b8c9d0e","secret":"from-dotnet"}', encoding="utf-8")
+    older.write_text('{"RefId":"5c0d6c8e-1f2a-4b3c-9d4e-5f6a7b8c9d0e","Secret":"from-0.9.0-beta.1"}', encoding="utf-8")
+
+    assert FileStorage(current).load() == ("5c0d6c8e-1f2a-4b3c-9d4e-5f6a7b8c9d0e", "from-dotnet")
+    assert FileStorage(older).load() == ("5c0d6c8e-1f2a-4b3c-9d4e-5f6a7b8c9d0e", "from-0.9.0-beta.1")
