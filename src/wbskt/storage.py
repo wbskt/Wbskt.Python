@@ -19,7 +19,12 @@ class Storage(Protocol):
 
 
 class FileStorage:
-    """Credentials in a JSON file, so the client registers once and signs in with them afterwards."""
+    """Credentials in a JSON file, so the client registers once and signs in with them afterwards.
+
+    The file is ``{"clientRefId": ..., "secret": ...}``, the same file the .NET SDK writes at the same
+    path, so a client moved from one SDK to the other keeps its credentials. A file the .NET SDK wrote
+    before 0.9.0-beta.2 (``RefId``, ``Secret``) is read too.
+    """
 
     def __init__(self, path) -> None:
         self.path = Path(path)
@@ -33,7 +38,9 @@ class FileStorage:
     def load(self) -> Credentials:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return str(data["clientRefId"]), str(data["secret"])
+            ref_id = data["clientRefId"] if "clientRefId" in data else data["RefId"]
+            secret = data["secret"] if "secret" in data else data["Secret"]
+            return str(ref_id), str(secret)
         except (OSError, ValueError, KeyError, TypeError):
             return None, None
 
