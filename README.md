@@ -19,6 +19,9 @@ it speaks may still change before 1.0.
 import time
 from wbskt import WbsktClient
 
+def read_sensor():
+    return 21.5
+
 client = WbsktClient("greenhouse-sensor", policy_pin="483920")
 client.on_message = lambda message: print("got", message.type, message.payload)
 client.start()

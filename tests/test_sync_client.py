@@ -115,9 +115,99 @@ def test_a_handler_can_stop_the_client(api):
         while client.connected and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not client.connected
+        deadline = time.monotonic() + 5
+        while client._loop.is_running() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not client._loop.is_running()
+
+        # And it starts again.
+        client.on_message = None
+        client.start()
+        assert client.connected
     finally:
         client.stop()
         socket.__exit__()
+
+
+def test_a_handler_that_sends_after_stopping_does_not_hang_the_client(api):
+    socket = ThreadedSocket()
+    fake = socket.__enter__()
+    client = _client(api, fake)
+
+    def handle(message) -> None:
+        client.stop()
+        client.send("late", None)
+
+    client.on_message = handle
+    try:
+        client.start()
+        assert socket.next()["type"] == protocol.CAPABILITIES
+        socket.send('{"type":"bye","payload":null}')
+        deadline = time.monotonic() + 5
+        while client._loop.is_running() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not client._loop.is_running()
+    finally:
+        client.stop()
+        socket.__exit__()
+
+
+def test_a_disconnect_handler_that_sends_does_not_hang_stop(api):
+    socket = ThreadedSocket()
+    fake = socket.__enter__()
+    client = _client(api, fake)
+    client.on_disconnected = lambda: client.send("bye", None)
+    try:
+        client.start()
+        assert socket.next()["type"] == protocol.CAPABILITIES
+        stopping = threading.Thread(target=client.stop, daemon=True)
+        stopping.start()
+        stopping.join(5)
+        assert not stopping.is_alive()
+    finally:
+        socket.__exit__()
+
+
+def test_a_bad_send_from_a_handler_raises_to_the_handler(api):
+    errors = []
+    socket = ThreadedSocket()
+    fake = socket.__enter__()
+    client = _client(api, fake)
+
+    def handle(message) -> None:
+        try:
+            client.send("", None)
+        except ValueError as error:
+            errors.append(error)
+
+    client.on_message = handle
+    try:
+        client.start()
+        assert socket.next()["type"] == protocol.CAPABILITIES
+        socket.send('{"type":"hello","payload":null}')
+        deadline = time.monotonic() + 5
+        while not errors and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(errors) == 1
+    finally:
+        client.stop()
+        socket.__exit__()
+
+
+def test_start_returns_unconnected_when_the_first_attempt_fails(api):
+    client = WbsktClient(
+        "sync-client",
+        "483920",
+        api_url=api.url,
+        socket_url="ws://127.0.0.1:9",
+        storage=MemoryStorage(),
+        reconnect_policy=ReconnectPolicy(NoJitter()),
+    )
+    try:
+        client.start()
+        assert not client.connected
+    finally:
+        client.stop()
 
 
 def test_start_returns_once_the_first_attempt_connected(api):
