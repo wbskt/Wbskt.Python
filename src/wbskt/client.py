@@ -156,12 +156,11 @@ class AsyncWbsktClient:
 
     async def send(self, message_type: str, payload: Any = None) -> None:
         """Send an application message, stamped now. Queued in order while offline."""
-        _check_type(message_type)
-        await self._send_or_buffer(_encode(message_type, payload, sent_at=_now()))
+        await self._send_or_buffer(_message_frame(message_type, payload))
 
     async def report_state(self, values: Dict[str, Any]) -> None:
         """Report the state variables that changed. Numbers are kept as readings for charts."""
-        await self._send_or_buffer(_encode(protocol.STATE_REPORT, dict(values), sent_at=_now()))
+        await self._send_or_buffer(_state_frame(values))
 
     async def set_capabilities(self, capabilities: Iterable[Command]) -> None:
         """Replace the commands the client accepts, and tell the server if connected."""
@@ -174,8 +173,6 @@ class AsyncWbsktClient:
                 pass
 
     async def _send_or_buffer(self, frame: str) -> None:
-        if len(frame.encode("utf-8")) > protocol.MAX_MESSAGE_BYTES:
-            raise ValueError(f"message is over {protocol.MAX_MESSAGE_BYTES} bytes")
         if self._connected and self._send_lock is not None:
             # The lock is FIFO, so paced sends still leave in the order they were made.
             async with self._send_lock:
@@ -413,6 +410,7 @@ class WbsktClient:
     def __init__(self, client_name: str, policy_pin: Optional[str] = None, **options: Any) -> None:
         self._loop = asyncio.new_event_loop()
         self._thread: Optional[threading.Thread] = None
+        self._stopped_thread: Optional[threading.Thread] = None
         self._options = (client_name, policy_pin, options)
         self._client: Optional[AsyncWbsktClient] = None
         self.on_message: Optional[Callable[[Message], None]] = None
@@ -429,8 +427,14 @@ class WbsktClient:
         A failed attempt is retried in the background. Only an error no retry can fix, such as
         :class:`RegistrationRequired`, is raised.
         """
+        if self._on_loop():
+            raise RuntimeError("start() can't be called from a handler")
         if self._thread is not None:
             return
+        if self._stopped_thread is not None:
+            # Stopped from a handler: its loop has to finish stopping before it can run again.
+            self._stopped_thread.join()
+            self._stopped_thread = None
         self._thread = threading.Thread(target=self._loop.run_forever, name="wbskt", daemon=True)
         self._thread.start()
         self._client = self._wait(self._create())
@@ -446,8 +450,9 @@ class WbsktClient:
         if thread is None or client is None:
             return
         self._thread = None
-        if self._on_own_thread(thread):
+        if self._on_loop():
             # From a handler: the loop can't wait for itself, so it stops once this handler returns.
+            self._stopped_thread = thread
             future = asyncio.ensure_future(client.stop(), loop=self._loop)
             future.add_done_callback(lambda _: self._loop.stop())
             return
@@ -457,8 +462,10 @@ class WbsktClient:
 
     def run_forever(self) -> None:
         """Start, then block until Ctrl+C or a fatal error such as a missing PIN."""
-        self.start()
+        if self._on_loop():
+            raise RuntimeError("run_forever() can't be called from a handler")
         try:
+            self.start()
             self._wait(self._require_client().wait_closed())
         except KeyboardInterrupt:
             pass
@@ -466,10 +473,13 @@ class WbsktClient:
             self.stop()
 
     def send(self, message_type: str, payload: Any = None) -> None:
-        self._call(self._require_client().send(message_type, payload))
+        # Built here, so a bad type or an oversized message raises to the caller on any thread.
+        frame = _message_frame(message_type, payload)
+        self._call(self._require_client()._send_or_buffer(frame))
 
     def report_state(self, values: Dict[str, Any]) -> None:
-        self._call(self._require_client().report_state(values))
+        frame = _state_frame(values)
+        self._call(self._require_client()._send_or_buffer(frame))
 
     def set_capabilities(self, capabilities: Iterable[Command]) -> None:
         self._call(self._require_client().set_capabilities(capabilities))
@@ -490,7 +500,7 @@ class WbsktClient:
 
     def _call(self, coroutine: Awaitable[Any]) -> None:
         """Run a call that only queues work: waited for from another thread, scheduled from a handler."""
-        if self._on_own_thread(self._thread):
+        if self._on_loop():
             # Waiting here would block the loop that has to run it, and the client with it.
             task = asyncio.ensure_future(coroutine, loop=self._loop)
             task.add_done_callback(_log_failure)
@@ -498,13 +508,17 @@ class WbsktClient:
         self._wait(coroutine)
 
     def _wait(self, coroutine: Awaitable[Any]) -> Any:
-        if self._on_own_thread(self._thread):
+        if self._on_loop():
+            coroutine.close()  # type: ignore[attr-defined]
             raise RuntimeError("this can't be called from a handler")
         return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()  # type: ignore[arg-type]
 
-    @staticmethod
-    def _on_own_thread(thread: Optional[threading.Thread]) -> bool:
-        return thread is not None and threading.current_thread() is thread
+    def _on_loop(self) -> bool:
+        """Whether the caller is the client's own loop: a handler, even one that runs during stop()."""
+        try:
+            return asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            return False
 
 
 def _log_failure(task: "asyncio.Future[Any]") -> None:
@@ -529,6 +543,21 @@ def _check_type(message_type: str) -> None:
         raise ValueError(f"type must be 1-{protocol.MAX_TYPE_LENGTH} characters")
     if protocol.is_reserved(message_type):
         raise ValueError(f"'{message_type}' is reserved for the platform")
+
+
+def _message_frame(message_type: str, payload: Any) -> str:
+    _check_type(message_type)
+    return _checked_size(_encode(message_type, payload, sent_at=_now()))
+
+
+def _state_frame(values: Dict[str, Any]) -> str:
+    return _checked_size(_encode(protocol.STATE_REPORT, dict(values), sent_at=_now()))
+
+
+def _checked_size(frame: str) -> str:
+    if len(frame.encode("utf-8")) > protocol.MAX_MESSAGE_BYTES:
+        raise ValueError(f"message is over {protocol.MAX_MESSAGE_BYTES} bytes")
+    return frame
 
 
 def _encode(message_type: str, payload: Any, sent_at: Optional[str] = None) -> str:
