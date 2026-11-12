@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional, Protocol, Tuple
 
@@ -31,7 +32,11 @@ class FileStorage:
 
     @classmethod
     def for_client(cls, client_name: str) -> "FileStorage":
-        """``wbskt/<name>.json`` in the user's data folder (``~/.local/share`` on Linux)."""
+        """``wbskt/<name>.json`` in the user's data folder (``~/.local/share`` on Linux).
+
+        ``\\ / : * ? " < > |`` and control characters become ``_``, as in the .NET SDK, so names that
+        differ only in those share a file.
+        """
         safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", client_name)
         return cls(_data_dir() / "wbskt" / f"{safe}.json")
 
@@ -48,25 +53,27 @@ class FileStorage:
 
     def save(self, client_ref_id: str, secret: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
+        # Written beside it and moved over it, so a crash never leaves half a file. Created readable by
+        # this user only, and named per save so two processes saving at once don't collide.
+        tmp = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
         try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
-        # Created readable by this user only, so the secret is never on disk with wider permissions.
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"clientRefId": client_ref_id, "secret": secret}))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.path)
-
-    def clear(self) -> None:
-        for path in (self.path, self.path.with_name(self.path.name + ".tmp")):
+            with os.fdopen(fd, "wb") as f:
+                f.write(json.dumps({"clientRefId": client_ref_id, "secret": secret}, separators=(",", ":")).encode("utf-8"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+        finally:
             try:
-                path.unlink()
+                tmp.unlink()
             except FileNotFoundError:
                 pass
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class MemoryStorage:
