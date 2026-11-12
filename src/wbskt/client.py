@@ -99,6 +99,7 @@ class AsyncWbsktClient:
         self._run_task: Optional["asyncio.Task[None]"] = None
         self._dispatch_task: Optional["asyncio.Task[None]"] = None
         self._error: Optional[BaseException] = None
+        self._attempted: Optional[asyncio.Event] = None
 
     @property
     def connected(self) -> bool:
@@ -109,6 +110,7 @@ class AsyncWbsktClient:
         if self._run_task is not None:
             return
         self._stopping = asyncio.Event()
+        self._attempted = asyncio.Event()
         self._inbox = asyncio.Queue()
         self._send_lock = asyncio.Lock()
         self._error = None
@@ -129,6 +131,17 @@ class AsyncWbsktClient:
                 except (asyncio.CancelledError, Exception):
                     pass
         self._run_task = self._dispatch_task = None
+
+    async def wait_first_attempt(self) -> None:
+        """Wait until the first connection attempt has finished, connected or not.
+
+        A failed attempt is retried in the background. Only an error no retry can fix, such as
+        :class:`RegistrationRequired`, is raised.
+        """
+        if self._attempted is not None:
+            await self._attempted.wait()
+        if self._error is not None:
+            raise self._error
 
     async def wait_closed(self) -> None:
         """Wait until the client stops, raising what stopped it if it wasn't ``stop()``."""
@@ -190,6 +203,7 @@ class AsyncWbsktClient:
                     break
                 try:
                     close_code = await self._connect_once()
+                    self._attempt_finished()
                     failures = 0
                     if close_code == protocol.CLOSE_REVOKED:
                         # Lost access: the token still validates until it expires, so log in afresh.
@@ -199,6 +213,7 @@ class AsyncWbsktClient:
                                     "another client may be using these credentials")
                     delay = self._policy.first_delay(close_code)
                 except _Throttled as throttled:
+                    self._attempt_finished()
                     log.warning("wbskt: %s", throttled)
                     delay = self._policy.after_throttle(throttled.retry_after)
                 except WbsktError as error:
@@ -208,12 +223,18 @@ class AsyncWbsktClient:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:  # network, refused login, bad upgrade: all retried
+                    self._attempt_finished()
                     delay = self._policy.retry_delay(failures)
                     failures += 1
                     log.info("wbskt: connect failed (%s); retrying in %.1fs", error, delay)
         finally:
             self._connected = False
             self._ws = None
+            self._attempt_finished()
+
+    def _attempt_finished(self) -> None:
+        if self._attempted is not None:
+            self._attempted.set()
 
     async def _sleep(self, seconds: float) -> bool:
         """Wait, waking early on stop(). True if stopping."""
@@ -277,6 +298,7 @@ class AsyncWbsktClient:
                         self._buffer.popleft()
                 # Nothing awaits between the empty check and this, so a send can't overtake the backlog.
                 self._connected = True
+                self._attempt_finished()
         except ConnectionClosed:
             return
         log.info("wbskt: connected as %s", self.client_name)
@@ -382,7 +404,10 @@ class WbsktClient:
     >>> client.start()
     >>> client.send("temperature", {"celsius": 21.5})
 
-    Handlers run on the client's thread, so keep them short or hand work off.
+    The thread is a daemon, so the client stops when the script ends: keep the script running for as
+    long as the client should stay connected. Handlers run on the client's thread, so keep them short
+    or hand work off. A handler may call ``send``, ``report_state``, ``set_capabilities`` and ``stop``:
+    on the client's own thread they are scheduled rather than waited for.
     """
 
     def __init__(self, client_name: str, policy_pin: Optional[str] = None, **options: Any) -> None:
@@ -399,26 +424,42 @@ class WbsktClient:
         return self._client is not None and self._client.connected
 
     def start(self) -> None:
+        """Connect, returning once the first attempt has finished, connected or not.
+
+        A failed attempt is retried in the background. Only an error no retry can fix, such as
+        :class:`RegistrationRequired`, is raised.
+        """
         if self._thread is not None:
             return
         self._thread = threading.Thread(target=self._loop.run_forever, name="wbskt", daemon=True)
         self._thread.start()
-        self._client = self._call(self._create())
-        self._call(self._client.start())
+        self._client = self._wait(self._create())
+        self._wait(self._client.start())
+        try:
+            self._wait(self._client.wait_first_attempt())
+        except WbsktError:
+            self.stop()
+            raise
 
     def stop(self) -> None:
-        if self._thread is None or self._client is None:
+        thread, client = self._thread, self._client
+        if thread is None or client is None:
             return
-        self._call(self._client.stop())
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join()
         self._thread = None
+        if self._on_own_thread(thread):
+            # From a handler: the loop can't wait for itself, so it stops once this handler returns.
+            future = asyncio.ensure_future(client.stop(), loop=self._loop)
+            future.add_done_callback(lambda _: self._loop.stop())
+            return
+        self._wait(client.stop())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        thread.join()
 
     def run_forever(self) -> None:
         """Start, then block until Ctrl+C or a fatal error such as a missing PIN."""
         self.start()
         try:
-            self._call(self._require_client().wait_closed())
+            self._wait(self._require_client().wait_closed())
         except KeyboardInterrupt:
             pass
         finally:
@@ -447,8 +488,28 @@ class WbsktClient:
             raise RuntimeError("call start() first")
         return self._client
 
-    def _call(self, coroutine: Awaitable[Any]) -> Any:
+    def _call(self, coroutine: Awaitable[Any]) -> None:
+        """Run a call that only queues work: waited for from another thread, scheduled from a handler."""
+        if self._on_own_thread(self._thread):
+            # Waiting here would block the loop that has to run it, and the client with it.
+            task = asyncio.ensure_future(coroutine, loop=self._loop)
+            task.add_done_callback(_log_failure)
+            return
+        self._wait(coroutine)
+
+    def _wait(self, coroutine: Awaitable[Any]) -> Any:
+        if self._on_own_thread(self._thread):
+            raise RuntimeError("this can't be called from a handler")
         return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()  # type: ignore[arg-type]
+
+    @staticmethod
+    def _on_own_thread(thread: Optional[threading.Thread]) -> bool:
+        return thread is not None and threading.current_thread() is thread
+
+
+def _log_failure(task: "asyncio.Future[Any]") -> None:
+    if not task.cancelled() and task.exception() is not None:
+        log.error("wbskt: a call made from a handler failed", exc_info=task.exception())
 
 
 async def _call(handler: Optional[Handler], *args: Any) -> None:
