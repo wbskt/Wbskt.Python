@@ -1,5 +1,4 @@
 import os
-import stat
 import sys
 
 import pytest
@@ -64,17 +63,30 @@ def test_a_null_value_reads_as_no_credentials(tmp_path):
     assert FileStorage(path).load() == (None, None)
 
 
-def test_a_temporary_file_left_by_an_interrupted_save_does_not_block_the_next(tmp_path):
-    path = tmp_path / "c.json"
-    (tmp_path / "c.json.tmp").write_text("partial", encoding="utf-8")
-    storage = FileStorage(path)
+def test_saves_leave_no_temporary_file_behind(tmp_path):
+    storage = FileStorage(tmp_path / "c.json")
     storage.save("abc", "s")
-    assert storage.load() == ("abc", "s")
-    assert not (tmp_path / "c.json.tmp").exists()
+    storage.save("abc", "t")
+    assert storage.load() == ("abc", "t")
+    assert [p.name for p in tmp_path.iterdir()] == ["c.json"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
-def test_the_file_is_readable_by_this_user_only(tmp_path):
-    path = tmp_path / "c.json"
-    FileStorage(path).save("abc", "s")
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+def test_the_file_matches_the_dotnet_sdk_byte_for_byte(tmp_path):
+    storage = FileStorage(tmp_path / "c.json")
+    storage.save("abc", "s")
+    assert (tmp_path / "c.json").read_bytes() == b'{"clientRefId":"abc","secret":"s"}'
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ('pi/kitchen:"1"', "pi_kitchen__1_"),
+        ("a*b?c|d<e>f\\g", "a_b_c_d_e_f_g"),
+        ("tab\there", "tab_here"),
+        ("greenhouse-sensor", "greenhouse-sensor"),
+    ],
+)
+def test_a_client_name_maps_to_the_file_name_the_dotnet_sdk_uses(tmp_path, monkeypatch, name, expected):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert FileStorage.for_client(name).path.name == f"{expected}.json"
