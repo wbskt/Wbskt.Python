@@ -93,6 +93,9 @@ class AsyncWbsktClient:
         self._token_expires = 0.0
         self._ws: Optional[ClientConnection] = None
         self._connected = False
+        # The backlog has gone out on this connection, so a send may skip the buffer. Set after
+        # _connected: until then a send queues behind the backlog to keep the order it was made in.
+        self._drained = False
         # Made in start(): on Python 3.9 they bind to the loop that exists when they're created.
         self._stopping: Optional[asyncio.Event] = None
         self._inbox: Optional["asyncio.Queue[Message]"] = None
@@ -173,13 +176,13 @@ class AsyncWbsktClient:
                 pass
 
     async def _send_or_buffer(self, frame: str) -> None:
-        if self._connected and self._send_lock is not None:
+        if self._drained and self._send_lock is not None:
             # The lock is FIFO, so paced sends still leave in the order they were made.
             async with self._send_lock:
                 # Read under the lock: a reconnect may have drained the backlog while this send waited,
                 # and a frame buffered for the old connection would then sit until the next one.
                 ws = self._ws
-                if self._connected and ws is not None:
+                if self._drained and ws is not None:
                     try:
                         await self._pacer.take()
                         await ws.send(frame)
@@ -225,7 +228,7 @@ class AsyncWbsktClient:
                     failures += 1
                     log.info("wbskt: connect failed (%s); retrying in %.1fs", error, delay)
         finally:
-            self._connected = False
+            self._connected = self._drained = False
             self._ws = None
             self._attempt_finished()
 
@@ -260,9 +263,19 @@ class AsyncWbsktClient:
         self._ws = ws
         drain: Optional["asyncio.Task[None]"] = None
         try:
+            sent = self._capabilities
             await ws.send(self._capabilities_frame())
-            # The backlog drains at the paced rate while pings are answered.
-            drain = asyncio.ensure_future(self._drain(ws))
+            # A set_capabilities() made while that frame was in flight saw the client offline and
+            # only kept the list, so it goes out now, before the client counts as connected.
+            if self._capabilities is not sent:
+                await ws.send(self._capabilities_frame())
+            # Connected once the server knows what this client accepts, not once the backlog is
+            # out: a long backlog drains at the paced rate, and the app should not wait for it.
+            self._connected = True
+            self._attempt_finished()
+            log.info("wbskt: connected as %s", self.client_name)
+            # The backlog drains while pings are answered.
+            drain = asyncio.ensure_future(self._announce_and_drain(ws))
             async for raw in ws:
                 if isinstance(raw, str):
                     await self._receive(ws, raw)
@@ -272,7 +285,7 @@ class AsyncWbsktClient:
             if drain is not None:
                 drain.cancel()
             was_connected = self._connected
-            self._connected = False
+            self._connected = self._drained = False
             self._ws = None
             await ws.close()
             if was_connected:
@@ -281,8 +294,16 @@ class AsyncWbsktClient:
         # Through the protocol object: Connection.close_code only arrived in websockets 13.1.
         return ws.protocol.close_code
 
-    async def _drain(self, ws: ClientConnection) -> None:
-        """Send the offline backlog, paced, then mark the client connected."""
+    async def _announce_and_drain(self, ws: ClientConnection) -> None:
+        """Raise on_connected, then send the offline backlog, paced, and let sends skip the buffer.
+
+        on_connected comes first so that anything it sends queues behind the backlog, in order.
+        """
+        try:
+            await _call(self.on_connected)
+        except Exception:
+            log.exception("wbskt: on_connected raised")
+
         assert self._send_lock is not None
         try:
             async with self._send_lock:
@@ -294,15 +315,9 @@ class AsyncWbsktClient:
                     if self._buffer and self._buffer[0] is frame:
                         self._buffer.popleft()
                 # Nothing awaits between the empty check and this, so a send can't overtake the backlog.
-                self._connected = True
-                self._attempt_finished()
+                self._drained = True
         except ConnectionClosed:
             return
-        log.info("wbskt: connected as %s", self.client_name)
-        try:
-            await _call(self.on_connected)
-        except Exception:
-            log.exception("wbskt: on_connected raised")
 
     async def _receive(self, ws: ClientConnection, raw: str) -> None:
         try:

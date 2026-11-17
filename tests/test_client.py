@@ -119,6 +119,56 @@ async def test_sends_capabilities_first_then_the_backlog_in_order(api, socket_se
     assert first["sentAt"] <= second["sentAt"]
 
 
+async def test_connected_once_capabilities_are_out_while_the_backlog_drains(api, socket_server, no_jitter):
+    client = make_client(api, socket_server, no_jitter)
+    connected_with_backlog = []
+    client.on_connected = lambda: connected_with_backlog.append(len(client._buffer))
+    # More than the burst, so the backlog takes paced time to drain.
+    for n in range(protocol.SEND_BURST + 5):
+        await client.send("count", n)
+    await client.start()
+    await client.wait_first_attempt()
+
+    assert client.connected
+    await eventually(lambda: connected_with_backlog)
+    assert connected_with_backlog[0] > 0
+    await client.stop()
+
+
+async def test_capabilities_set_while_the_backlog_drains_reach_the_server(api, socket_server, no_jitter):
+    relay = Command("relay.set", "Switch the relay")
+    client = make_client(api, socket_server, no_jitter)
+    for n in range(protocol.SEND_BURST + 5):
+        await client.send("count", n)
+    await client.start()
+    await client.wait_first_attempt()
+    await client.set_capabilities([relay])
+
+    frames = [await socket_server.next() for _ in range(protocol.SEND_BURST + 7)]
+    await client.stop()
+
+    capabilities = [f["payload"]["capabilities"] for f in frames if f["type"] == protocol.CAPABILITIES]
+    assert capabilities[0] == []
+    assert [c["command"] for c in capabilities[1]] == ["relay.set"]
+
+
+async def test_a_send_from_on_connected_follows_the_backlog(api, socket_server, no_jitter):
+    client = make_client(api, socket_server, no_jitter)
+
+    async def hello() -> None:
+        await client.send("hello")
+
+    client.on_connected = hello
+    await client.send("count", 1)
+    await client.start()
+
+    await socket_server.next()
+    sent = [(await socket_server.next())["type"], (await socket_server.next())["type"]]
+    await client.stop()
+
+    assert sent == ["count", "hello"]
+
+
 async def test_capabilities_carry_the_firmware_version_only_when_given(api, socket_server, no_jitter):
     client = make_client(api, socket_server, no_jitter, firmware_version="2.4.1")
     await client.start()
