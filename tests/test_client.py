@@ -84,6 +84,22 @@ async def test_waits_for_retry_after_when_throttled(api, socket_server, no_jitte
     assert asyncio.get_running_loop().time() - started >= 0.3
 
 
+async def test_a_throttle_without_retry_after_backs_off_like_a_failure(api, socket_server, no_jitter, monkeypatch):
+    from wbskt import reconnect
+
+    # No jitter makes every back-off zero, so count the failures the policy is asked about instead.
+    failures = []
+    retry_delay = reconnect.ReconnectPolicy.retry_delay
+    monkeypatch.setattr(reconnect.ReconnectPolicy, "retry_delay", lambda self, n: failures.append(n) or retry_delay(self, n))
+    api.login_answers = [(429, {}, {}), (429, {}, {"Retry-After": "soon"})]
+    client = make_client(api, socket_server, no_jitter)
+    await client.start()
+    await socket_server.wait_connections(1)
+    await client.stop()
+
+    assert failures == [0, 1]
+
+
 async def test_stops_without_a_pin_or_credentials(api, socket_server, no_jitter):
     client = make_client(api, socket_server, no_jitter)
     client.policy_pin = None
