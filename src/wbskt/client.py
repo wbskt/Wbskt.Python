@@ -38,8 +38,9 @@ Handler = Callable[..., Union[None, Awaitable[None]]]
 
 
 class _Throttled(Exception):
-    def __init__(self, retry_after: float) -> None:
-        super().__init__(f"rate limited, retry after {retry_after:g}s")
+    def __init__(self, retry_after: Optional[float]) -> None:
+        wait = "with no usable Retry-After" if retry_after is None else f"retry after {retry_after:g}s"
+        super().__init__(f"rate limited, {wait}")
         self.retry_after = retry_after
 
 
@@ -215,7 +216,13 @@ class AsyncWbsktClient:
                 except _Throttled as throttled:
                     self._attempt_finished()
                     log.warning("wbskt: %s", throttled)
-                    delay = self._policy.after_throttle(throttled.retry_after)
+                    if throttled.retry_after is not None:
+                        delay = self._policy.after_throttle(throttled.retry_after)
+                    else:
+                        # Without a wait to honour, a 429 counts as a failure, so the back-off still
+                        # grows instead of retrying a throttled login every couple of seconds.
+                        delay = self._policy.retry_delay(failures)
+                        failures += 1
                 except WbsktError as error:
                     self._error = error
                     log.error("wbskt: %s", error)
@@ -600,11 +607,12 @@ def _parse_time(value: Any) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _retry_after(headers) -> float:
+def _retry_after(headers) -> Optional[float]:
+    """The Retry-After seconds, or None when the header is missing or not a number of seconds."""
     for key, value in headers.items():
         if key.lower() == "retry-after":
             try:
                 return max(0.0, float(value))
             except ValueError:
-                return 0.0
-    return 0.0
+                return None
+    return None
