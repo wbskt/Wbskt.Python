@@ -15,6 +15,9 @@ RESTART_SPREAD = 30.0
 THROTTLED_WAIT = 30.0
 BASE = 2.0
 CAP = 60.0
+# The longest Retry-After honoured. A server asks for seconds; a proxy or misconfiguration asking for
+# days would otherwise keep a client away that long.
+MAX_RETRY_AFTER = 3600.0
 
 
 class ReconnectPolicy:
@@ -34,7 +37,8 @@ class ReconnectPolicy:
         return self._up_to(min(CAP, BASE * (2 ** min(max(failures, 0), 10))))
 
     def after_throttle(self, retry_after: float) -> float:
-        return retry_after + self._up_to(BASE)
+        """The wait after a 429: what the server asked for, capped, plus jitter."""
+        return min(max(retry_after, 0.0), MAX_RETRY_AFTER) + self._up_to(BASE)
 
     def _up_to(self, ceiling: float) -> float:
         return self._rng.random() * ceiling

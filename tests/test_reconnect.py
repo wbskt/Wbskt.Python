@@ -2,7 +2,7 @@ import random
 
 from wbskt import ReconnectPolicy
 from wbskt import protocol
-from wbskt.reconnect import CAP, RESTART_SPREAD, SPREAD, THROTTLED_WAIT
+from wbskt.reconnect import CAP, MAX_RETRY_AFTER, RESTART_SPREAD, SPREAD, THROTTLED_WAIT
 
 
 def test_delays_stay_within_their_ceilings():
@@ -17,6 +17,8 @@ def test_delays_stay_within_their_ceilings():
         assert 0 <= policy.retry_delay(3) <= 16
         assert 0 <= policy.retry_delay(50) <= CAP
         assert 5 <= policy.after_throttle(5) <= 7
+        assert MAX_RETRY_AFTER <= policy.after_throttle(10 ** 9) <= MAX_RETRY_AFTER + 2
+        assert 0 <= policy.after_throttle(-5) <= 2
 
 
 def test_delays_are_spread_rather_than_fixed():
@@ -25,3 +27,13 @@ def test_delays_are_spread_rather_than_fixed():
 
     assert min(delays) < 1
     assert max(delays) > 9
+
+
+def test_a_retry_after_that_is_no_number_of_seconds_is_ignored():
+    from wbskt.client import _retry_after
+
+    assert _retry_after({"Retry-After": "7"}) == 7.0
+    assert _retry_after({"retry-after": "-3"}) == 0.0
+    for value in ("inf", "nan", "soon", "Wed, 21 Oct 2026 07:28:00 GMT"):
+        assert _retry_after({"Retry-After": value}) is None
+    assert _retry_after({}) is None

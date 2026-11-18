@@ -8,6 +8,7 @@ import collections
 import inspect
 import json
 import logging
+import math
 import platform
 import re
 import threading
@@ -612,7 +613,9 @@ def _retry_after(headers) -> Optional[float]:
     for key, value in headers.items():
         if key.lower() == "retry-after":
             try:
-                return max(0.0, float(value))
+                seconds = float(value)
             except ValueError:
                 return None
+            # "inf" and "nan" parse as floats but are no wait to honour.
+            return max(0.0, seconds) if math.isfinite(seconds) else None
     return None

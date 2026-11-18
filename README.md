@@ -126,5 +126,5 @@ reserved; `send` raises `ValueError` for either.
 
 The SDK implements [the client protocol](https://github.com/wbskt/Wbskt/blob/master/Docs/Client.Protocol.md)
 and its [WebSocket binding](https://github.com/wbskt/Wbskt/blob/master/Docs/Client.Protocol.WebSocket.md):
-token reuse, jittered reconnects that honour `Retry-After`, ping answers and command
+token reuse, jittered reconnects that honour `Retry-After` (up to an hour; a 429 without one backs off), ping answers and command
 acknowledgements. Read it to write a client in another language.
