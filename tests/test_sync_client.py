@@ -44,6 +44,7 @@ class ThreadedSocket:
         asyncio.run_coroutine_threadsafe(stop(), self.loop).result(5)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(5)
+        self.loop.close()
 
 
 def test_the_sync_client_round_trip(api):
@@ -233,3 +234,46 @@ def test_start_raises_when_no_retry_can_help(api):
     finally:
         client.stop()
         socket.__exit__()
+
+
+def test_calls_after_stop_raise_instead_of_hanging_and_start_works_again(api):
+    socket = ThreadedSocket()
+    fake = socket.__enter__()
+    try:
+        client = WbsktClient(
+            "sync-client",
+            "483920",
+            api_url=api.url,
+            socket_url=fake.url,
+            storage=MemoryStorage(),
+            reconnect_policy=ReconnectPolicy(NoJitter()),
+        )
+        client.start()
+        first_loop = client._loop
+        client.stop()
+
+        assert first_loop.is_closed()
+        outcome = []
+
+        def late_send() -> None:
+            try:
+                client.send("reading", 1)
+            except RuntimeError as error:
+                outcome.append(str(error))
+
+        worker = threading.Thread(target=late_send)
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert outcome and "stopped" in outcome[0]
+        with pytest.raises(RuntimeError, match="stopped"):
+            client.report_state({"t": 1})
+        with pytest.raises(RuntimeError, match="stopped"):
+            client.set_capabilities([])
+
+        client.start()
+        assert client.connected
+        client.send("reading", 2)
+        client.stop()
+    finally:
+        socket.__exit__(None, None, None)
