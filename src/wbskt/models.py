@@ -71,3 +71,15 @@ class CredentialsRejected(WbsktError):
     The credentials are kept. Install the new secret beside the same client id, or remove them to
     register again with the PIN.
     """
+
+
+class CredentialsNotSaved(WbsktError):
+    """The client registered but its storage could not save the credentials (a read-only folder).
+
+    It stops rather than retry, because each retry would register another client. Make the storage
+    writable and start the same client again: it saves the credentials before it connects.
+    """
+
+    def __init__(self, client_ref_id: str, message: str) -> None:
+        super().__init__(message)
+        self.client_ref_id = client_ref_id

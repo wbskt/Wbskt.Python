@@ -36,7 +36,9 @@ client and stores its credentials in your user data folder (`~/.local/share/wbsk
 Linux), so later runs sign in without registering again. If the policy needs approval, the client
 waits and connects once someone approves it in the console. That folder must be writable: if the
 credentials can't be saved, or a credentials file is there but can't be read, the client stops with
-a `WbsktError` naming the path rather than registering a second client. Under a read-only root or a
+a `WbsktError` naming the path rather than registering a second client (`CredentialsNotSaved` when
+it registered but couldn't save: fix the folder and start the same client again, and it saves the
+credentials before it connects). Under a read-only root or a
 sandboxed service, pass `storage=FileStorage(path)` with a writable path.
 
 `start()` returns once the first connection attempt has finished; a failed one is retried in the
@@ -142,7 +144,8 @@ raised from `start()`, `wait_closed()` and `run_forever()`) and keeps its creden
 registers again by itself: a deleted device would come back as a new client, and a rotated one would
 stay offline beside a duplicate.
 
-- **Secret rotated:** save the new secret from the console beside the same client id, then start again.
+- **Secret rotated:** save the new secret from the console beside the same client id, then call
+  `start()` again. The client reads its storage afresh after a refusal, so the same instance picks it up.
 
   ```python
   from wbskt import FileStorage
@@ -153,8 +156,8 @@ stay offline beside a duplicate.
   ```
 
 - **Register again** (the client was deleted, or you point it at a fresh install): delete the
-  credentials file (`FileStorage.for_client("greenhouse-sensor").clear()`). The next start registers
-  with the PIN as a new client.
+  credentials file (`FileStorage.for_client("greenhouse-sensor").clear()`). The next `start()`
+  registers with the PIN as a new client.
 
 ## Options
 
@@ -189,6 +192,7 @@ logging.basicConfig(level=logging.INFO)
 |---|---|
 | `registration answered 404 POLICY_NOT_FOUND` | The PIN matches no policy. The client stops with `WbsktError`: check the PIN in the console (**Policies**). |
 | `registration answered 400 REGISTRATION_PIN_REQUIRED` | The PIN was empty. The client stops with `WbsktError`. |
+| `registration answered 400 CLIENT_NAME_INVALID` | The name is blank or over 100 characters once trimmed. The client stops with `WbsktError`; the constructor already raises `ValueError` for it. |
 | `registration answered 403 POLICY_DISABLED` | The policy is turned off. Turn it on in the console; the client retries. |
 | `registration answered 400 POLICY_LIMIT_REACHED` or `409 PLAN_CLIENT_LIMIT_REACHED` | The policy or the plan is full. Remove a client you no longer use; the client retries. |
 | `login answered 401 CLIENT_NOT_REGISTERED` | Waiting for approval, or revoked or rejected. Approve it in the console; the client retries. |

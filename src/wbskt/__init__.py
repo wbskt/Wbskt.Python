@@ -1,7 +1,7 @@
 """Connect a client to Wbskt. See README.md, and Docs/Client.Protocol.md for the wire protocol."""
 
 from .client import DEFAULT_API_URL, DEFAULT_SOCKET_URL, AsyncWbsktClient, WbsktClient
-from .models import Command, CredentialsRejected, DataType, Message, Parameter, RegistrationRequired, WbsktError
+from .models import Command, CredentialsNotSaved, CredentialsRejected, DataType, Message, Parameter, RegistrationRequired, WbsktError
 from .reconnect import ReconnectPolicy
 from .storage import FileStorage, MemoryStorage, Storage
 from .version import __version__
@@ -9,6 +9,7 @@ from .version import __version__
 __all__ = [
     "AsyncWbsktClient",
     "Command",
+    "CredentialsNotSaved",
     "CredentialsRejected",
     "DataType",
     "DEFAULT_API_URL",
