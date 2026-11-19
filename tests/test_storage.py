@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from wbskt import FileStorage
+from wbskt import FileStorage, WbsktError
 
 
 def test_round_trips_and_clears(tmp_path):
@@ -90,3 +90,11 @@ def test_a_client_name_maps_to_the_file_name_the_dotnet_sdk_uses(tmp_path, monke
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert FileStorage.for_client(name).path.name == f"{expected}.json"
+
+
+def test_a_file_that_cannot_be_read_raises_instead_of_reading_as_empty(tmp_path):
+    # A directory where the file should be fails to read with an OSError other than "not found".
+    (tmp_path / "creds.json").mkdir()
+
+    with pytest.raises(WbsktError, match="creds.json"):
+        FileStorage(tmp_path / "creds.json").load()

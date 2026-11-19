@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Union
+from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Tuple, Union
 
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -93,6 +93,8 @@ class AsyncWbsktClient:
         self._policy = reconnect_policy or ReconnectPolicy()
         self._token: Optional[str] = None
         self._token_expires = 0.0
+        # The credentials in use, kept so a registration is never repeated because storage failed.
+        self._credentials: Optional[Tuple[str, str]] = None
         self._ws: Optional[ClientConnection] = None
         self._connected = False
         # The backlog has gone out on this connection, so a send may skip the buffer. Set after
@@ -369,9 +371,13 @@ class AsyncWbsktClient:
         if self._token is not None and time.monotonic() < self._token_expires - TOKEN_RENEW_BEFORE:
             return self._token
 
-        client_ref_id, secret = self.storage.load()
-        if not client_ref_id or not secret:
-            client_ref_id, secret = await self._register()
+        if self._credentials is None:
+            stored_ref_id, stored_secret = self.storage.load()
+            if stored_ref_id and stored_secret:
+                self._credentials = (stored_ref_id, stored_secret)
+            else:
+                self._credentials = await self._register()
+        client_ref_id, secret = self._credentials
 
         status, body, headers = await _post(f"{self.api_url}{protocol.LOGIN_PATH}", {"clientRefId": client_ref_id, "secret": secret})
         if status == 200 and isinstance(body, dict) and body.get("accessToken"):
@@ -383,11 +389,12 @@ class AsyncWbsktClient:
         code = body.get("code") if isinstance(body, dict) else None
         if status == 401 and code == "CLIENT_UNAUTHORIZED":
             # Deleted, or its secret rotated: these credentials will never work again.
+            self._credentials = None
             self.storage.clear()
             raise _LoginRefused("credentials no longer valid; registering again")
         raise _LoginRefused(f"login answered {status} {code or ''}".strip())
 
-    async def _register(self):
+    async def _register(self) -> Tuple[str, str]:
         if not self.policy_pin:
             raise RegistrationRequired("no stored credentials and no policy PIN to register with")
         status, body, headers = await _post(f"{self.api_url}{protocol.REGISTER_PATH}", {"pin": self.policy_pin, "name": self.client_name})
@@ -398,8 +405,17 @@ class AsyncWbsktClient:
             raise _LoginRefused(f"registration answered {status} {code or ''}".strip())
 
         client_ref_id, secret = str(body["clientRefId"]), str(body["secret"])
+        # Kept before saving, so a failed save can't lead to a second registration in this process.
+        self._credentials = (client_ref_id, secret)
         # Saved even when pending approval: registering again would make a second client.
-        self.storage.save(client_ref_id, secret)
+        try:
+            self.storage.save(client_ref_id, secret)
+        except OSError as error:
+            where = getattr(self.storage, "path", type(self.storage).__name__)
+            raise WbsktError(
+                f"registered as {client_ref_id} but can't save its credentials to {where}: {error}. "
+                "Make it writable and start again; delete the client just registered in the console"
+            ) from error
         if body.get("status") == protocol.PENDING:
             log.warning("wbskt: registered %s; waiting for approval in the console", self.client_name)
         return client_ref_id, secret

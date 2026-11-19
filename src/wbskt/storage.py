@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Optional, Protocol, Tuple
 
+from .models import WbsktError
+
 Credentials = Tuple[Optional[str], Optional[str]]
 
 
@@ -41,11 +43,22 @@ class FileStorage:
         return cls(_data_dir() / "wbskt" / f"{safe}.json")
 
     def load(self) -> Credentials:
+        """The stored credentials, or ``(None, None)`` when there is no file or it holds none.
+
+        A file that is there but can't be read raises :class:`WbsktError`: reading it as "no
+        credentials" would register a second client and then write over the good file.
+        """
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
+            text = self.path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            return None, None
+        except OSError as error:
+            raise WbsktError(f"can't read the credentials file {self.path}: {error}") from error
+        try:
+            data = json.loads(text)
             ref_id = data["clientRefId"] if "clientRefId" in data else data["RefId"]
             secret = data["secret"] if "secret" in data else data["Secret"]
-        except (OSError, ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError):
             return None, None
         if not isinstance(ref_id, str) or not isinstance(secret, str) or not ref_id or not secret:
             return None, None
