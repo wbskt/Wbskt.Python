@@ -21,6 +21,8 @@ class FakeApi:
         self.status = protocol.REGISTERED
         # Answers to give the next logins, before the normal 200: (status, body, headers).
         self.login_answers: List[tuple] = []
+        # Answers to give the next registrations, before the normal 200.
+        self.register_answers: List[tuple] = []
         self.issued: List[str] = []
         self._lock = threading.Lock()
 
@@ -28,6 +30,8 @@ class FakeApi:
         with self._lock:
             if path == protocol.REGISTER_PATH:
                 self.registrations.append(body)
+                if self.register_answers:
+                    return self.register_answers.pop(0)
                 return 200, {"clientRefId": str(uuid.uuid4()), "secret": f"secret-{len(self.registrations)}", "status": self.status}, {}
             if path == protocol.LOGIN_PATH:
                 self.logins.append(body)

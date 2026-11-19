@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -98,6 +99,20 @@ async def test_a_throttle_without_retry_after_backs_off_like_a_failure(api, sock
     await client.stop()
 
     assert failures == [0, 1]
+
+
+async def test_a_refused_registration_is_a_warning_naming_the_code(api, socket_server, no_jitter, caplog):
+    # A full plan answers 409; logged at INFO, the board looked merely "not connecting" (wbskt/Wbskt#988).
+    api.register_answers = [(409, {"code": "PLAN_CLIENT_LIMIT_REACHED", "detail": "You have 20 clients; Free allows 20."}, {})]
+    client = make_client(api, socket_server, no_jitter)
+    with caplog.at_level(logging.WARNING, logger="wbskt"):
+        await client.start()
+        await socket_server.wait_connections(1)
+        await client.stop()
+
+    assert len(api.registrations) == 2
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("409 PLAN_CLIENT_LIMIT_REACHED" in m and "Free allows 20" in m for m in warnings)
 
 
 async def test_stops_without_a_pin_or_credentials(api, socket_server, no_jitter):
