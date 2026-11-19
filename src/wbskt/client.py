@@ -27,7 +27,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from . import _http, protocol
 from ._pacing import Pacer
-from .models import Command, CredentialsRejected, Message, RegistrationRequired, WbsktError
+from .models import Command, CredentialsNotSaved, CredentialsRejected, Message, RegistrationRequired, WbsktError
 from .reconnect import ReconnectPolicy
 from .storage import FileStorage, Storage
 from .version import __version__
@@ -81,8 +81,7 @@ class AsyncWbsktClient:
         reconnect_policy: Optional[ReconnectPolicy] = None,
         firmware_version: Optional[str] = None,
     ) -> None:
-        if not client_name:
-            raise ValueError("client_name is required")
+        _check_client_name(client_name)
         self.client_name = client_name
         self.policy_pin = policy_pin
         self.api_url = api_url.rstrip("/")
@@ -102,6 +101,8 @@ class AsyncWbsktClient:
         self._token_expires = 0.0
         # The credentials in use, kept so a registration is never repeated because storage failed.
         self._credentials: Optional[Tuple[str, str]] = None
+        # Registered, but storage refused the credentials: saved again before the next login.
+        self._unsaved = False
         self._ws: Optional[ClientConnection] = None
         self._connected = False
         # The backlog has gone out on this connection, so a send may skip the buffer. Set after
@@ -122,9 +123,15 @@ class AsyncWbsktClient:
         return self._connected
 
     async def start(self) -> None:
-        """Start connecting in the background. The first attempt is immediate."""
+        """Start connecting in the background. The first attempt is immediate.
+
+        A client that stopped for good (say with :class:`CredentialsRejected`) starts again; one that is
+        running is left as it is.
+        """
         if self._run_task is not None:
-            return
+            if not self._run_task.done():
+                return
+            await self.stop()
         self._stopping = asyncio.Event()
         self._attempted = asyncio.Event()
         self._inbox = asyncio.Queue()
@@ -429,6 +436,9 @@ class AsyncWbsktClient:
                 self._credentials = (stored_ref_id, stored_secret)
             else:
                 self._credentials = await self._register()
+        elif self._unsaved:
+            # Logging in with credentials only this process holds would register again after a restart.
+            self._save_credentials(*self._credentials)
         client_ref_id, secret = self._credentials
 
         status, body, headers = await _post(f"{self.api_url}{protocol.LOGIN_PATH}", {"clientRefId": client_ref_id, "secret": secret})
@@ -442,6 +452,9 @@ class AsyncWbsktClient:
         if status == 401 and code == "CLIENT_UNAUTHORIZED":
             # Deleted, or its secret rotated. Registering again would bring a deleted device back as a
             # new client, or leave the rotated one offline beside a duplicate, so keep them and stop.
+            # Forgotten here but kept in storage, so the next start reads what the app saved or cleared.
+            self._credentials = None
+            self._token = None
             where = getattr(self.storage, "path", type(self.storage).__name__)
             raise CredentialsRejected(
                 f"login refused the credentials of {client_ref_id} (CLIENT_UNAUTHORIZED): the client was "
@@ -459,25 +472,33 @@ class AsyncWbsktClient:
         if status not in (200, 201) or not isinstance(body, dict) or not body.get("clientRefId"):
             code = body.get("code") if isinstance(body, dict) else None
             if code in protocol.FATAL_REGISTRATION_CODES:
-                # A wrong or missing PIN: retrying with the same one can never work.
-                raise WbsktError(f"{_refusal('registration', status, body)}. Check the policy PIN in the console (Policies)")
+                # A wrong or missing PIN, or a name the platform can't store: retrying can never work.
+                fix = "Check the client name" if code == "CLIENT_NAME_INVALID" else "Check the policy PIN in the console (Policies)"
+                raise WbsktError(f"{_refusal('registration', status, body)}. {fix}")
             raise _LoginRefused(_refusal("registration", status, body))
 
         client_ref_id, secret = str(body["clientRefId"]), str(body["secret"])
         # Kept before saving, so a failed save can't lead to a second registration in this process.
         self._credentials = (client_ref_id, secret)
+        self._unsaved = True
         # Saved even when pending approval: registering again would make a second client.
+        self._save_credentials(client_ref_id, secret)
+        if body.get("status") == protocol.PENDING:
+            log.warning("wbskt: registered %s; waiting for approval in the console", self.client_name)
+        return client_ref_id, secret
+
+    def _save_credentials(self, client_ref_id: str, secret: str) -> None:
         try:
             self.storage.save(client_ref_id, secret)
         except OSError as error:
             where = getattr(self.storage, "path", type(self.storage).__name__)
-            raise WbsktError(
+            raise CredentialsNotSaved(
+                client_ref_id,
                 f"registered as {client_ref_id} but can't save its credentials to {where}: {error}. "
-                "Make it writable and start again; delete the client just registered in the console"
+                "Make it writable and start this client again: it saves them before it connects. If the "
+                "process ends first, the next start registers again; delete this client in the console",
             ) from error
-        if body.get("status") == protocol.PENDING:
-            log.warning("wbskt: registered %s; waiting for approval in the console", self.client_name)
-        return client_ref_id, secret
+        self._unsaved = False
 
     def _capabilities_frame(self) -> str:
         frame: Dict[str, Any] = {
@@ -506,6 +527,7 @@ class WbsktClient:
     """
 
     def __init__(self, client_name: str, policy_pin: Optional[str] = None, **options: Any) -> None:
+        _check_client_name(client_name)
         # A loop per start(): stop() closes it, with the threads its HTTP calls ran on.
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -609,6 +631,10 @@ class WbsktClient:
     async def _create(self) -> AsyncWbsktClient:
         client_name, policy_pin, options = self._options
         client = AsyncWbsktClient(client_name, policy_pin, **options)
+        previous = self._client
+        if previous is not None and previous._unsaved:
+            # Registered by the last start but never saved: a new client would register again.
+            client._credentials, client._unsaved = previous._credentials, True
         # Looked up on each call, so handlers can be set before or after start().
         client.on_message = lambda message: _call(self.on_message, message)
         client.on_connected = lambda: _call(self.on_connected)
@@ -720,6 +746,13 @@ def _checked_size(frame: str) -> str:
     if len(frame.encode("utf-8")) > protocol.MAX_MESSAGE_BYTES:
         raise ValueError(f"message is over {protocol.MAX_MESSAGE_BYTES} bytes")
     return frame
+
+
+def _check_client_name(client_name: str) -> None:
+    # Refused where the mistake is made: registration answers 400 CLIENT_NAME_INVALID for it, as the
+    # platform trims the name and stores 1-100 characters.
+    if not isinstance(client_name, str) or not 0 < len(client_name.strip()) <= protocol.MAX_CLIENT_NAME_LENGTH:
+        raise ValueError(f"client_name must be 1-{protocol.MAX_CLIENT_NAME_LENGTH} characters once trimmed")
 
 
 def _encode(message_type: str, payload: Any, sent_at: Optional[str] = None) -> str:

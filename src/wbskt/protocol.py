@@ -3,6 +3,7 @@
 SUBPROTOCOL = "wbskt.v1"
 MAX_MESSAGE_BYTES = 64 * 1024
 MAX_TYPE_LENGTH = 100
+MAX_CLIENT_NAME_LENGTH = 100
 
 # Below the gateway's default budget (10 a second, burst 100), a flushed offline backlog included.
 SEND_PER_SECOND = 8.0
@@ -20,8 +21,8 @@ REFUSED_EXPIRED = "expired"
 REGISTERED = 1
 PENDING = 0
 
-# Registration answers no retry with the same PIN can fix: a wrong PIN, or none.
-FATAL_REGISTRATION_CODES = ("POLICY_NOT_FOUND", "REGISTRATION_PIN_REQUIRED")
+# Registration answers no retry can fix: a wrong PIN, none, or a name the platform can't store.
+FATAL_REGISTRATION_CODES = ("POLICY_NOT_FOUND", "REGISTRATION_PIN_REQUIRED", "CLIENT_NAME_INVALID")
 
 API_PREFIX = "/api/v1"
 REGISTER_PATH = API_PREFIX + "/client-registrations/initiate"
