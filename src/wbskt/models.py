@@ -63,3 +63,11 @@ class WbsktError(Exception):
 
 class RegistrationRequired(WbsktError):
     """There are no stored credentials and no policy PIN to register with."""
+
+
+class CredentialsRejected(WbsktError):
+    """Login refused the stored credentials: the client was deleted or its secret rotated.
+
+    The credentials are kept. Install the new secret beside the same client id, or remove them to
+    register again with the PIN.
+    """

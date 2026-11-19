@@ -21,7 +21,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from . import _http, protocol
 from ._pacing import Pacer
-from .models import Command, Message, RegistrationRequired, WbsktError
+from .models import Command, CredentialsRejected, Message, RegistrationRequired, WbsktError
 from .reconnect import ReconnectPolicy
 from .storage import FileStorage, Storage
 from .version import __version__
@@ -388,10 +388,14 @@ class AsyncWbsktClient:
             raise _Throttled(_retry_after(headers))
         code = body.get("code") if isinstance(body, dict) else None
         if status == 401 and code == "CLIENT_UNAUTHORIZED":
-            # Deleted, or its secret rotated: these credentials will never work again.
-            self._credentials = None
-            self.storage.clear()
-            raise _LoginRefused("credentials no longer valid; registering again")
+            # Deleted, or its secret rotated. Registering again would bring a deleted device back as a
+            # new client, or leave the rotated one offline beside a duplicate, so keep them and stop.
+            where = getattr(self.storage, "path", type(self.storage).__name__)
+            raise CredentialsRejected(
+                f"login refused the credentials of {client_ref_id} (CLIENT_UNAUTHORIZED): the client was "
+                f"deleted or its secret rotated in the console. If it was rotated, save the new secret to "
+                f"{where} with the same client id; to register again with the PIN, remove that file"
+            )
         raise _LoginRefused(f"login answered {status} {code or ''}".strip())
 
     async def _register(self) -> Tuple[str, str]:
