@@ -1,5 +1,10 @@
 import asyncio
+import decimal
+import enum
+import json
 import logging
+import numbers
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -411,3 +416,57 @@ async def test_reconnects_quickly_after_a_restart_close(api, socket_server, no_j
 
     await socket_server.wait_connections(2)
     await client.stop()
+
+
+async def test_a_nan_or_infinite_reading_is_refused_rather_than_sent_as_invalid_json(api, socket_server, no_jitter):
+    client = make_client(api, socket_server, no_jitter)
+
+    with pytest.raises(ValueError, match="JSON"):
+        await client.report_state({"humidity": 41, "temp": float("nan")})
+    with pytest.raises(ValueError, match="JSON"):
+        await client.send("reading", {"value": float("inf")})
+    assert len(client._buffer) == 0
+
+
+async def test_numbers_of_other_types_are_sent_as_numbers(api, socket_server, no_jitter):
+    class Mode(enum.Enum):
+        AUTO = "auto"
+
+    client = make_client(api, socket_server, no_jitter)
+    await client.report_state({
+        "count": _FakeInt(3),
+        "price": decimal.Decimal("1.25"),
+        "at": datetime(2026, 11, 19, 7, 0, tzinfo=timezone.utc),
+        "id": uuid.UUID(int=1),
+        "mode": Mode.AUTO,
+    })
+
+    payload = json.loads(client._buffer[0])["payload"]
+    assert payload == {"count": 3, "price": 1.25, "at": "2026-11-19T07:00:00+00:00", "id": str(uuid.UUID(int=1)), "mode": "auto"}
+
+    with pytest.raises(ValueError, match="object is not JSON serializable"):
+        await client.send("reading", {"thing": object()})
+
+
+async def test_non_ascii_text_is_measured_in_utf8_bytes(api, socket_server, no_jitter):
+    client = make_client(api, socket_server, no_jitter)
+    # 20,000 CJK characters: 60 KB as UTF-8, but 120 KB as \u escapes.
+    await client.send("note", "漢" * 20000)
+
+    assert "漢" in client._buffer[0]
+
+
+class _FakeInt:
+    """Stands in for numpy.int64: an Integral that json can't write on its own."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __int__(self) -> int:
+        return self.value
+
+    def __index__(self) -> int:
+        return self.value
+
+
+numbers.Integral.register(_FakeInt)

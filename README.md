@@ -101,7 +101,10 @@ shows it on the client page. It is not the SDK's version, which is sent for you.
 client.report_state({"humidity": 41, "fan": "on"})
 ```
 
-Send only what changed. Numbers are kept as readings and charted in the console.
+Send only what changed. Numbers are kept as readings and charted in the console; numpy scalars and
+`Decimal` go out as numbers too. NaN and infinity aren't JSON, so `report_state` and `send` raise
+`ValueError` for them: leave out a sensor that failed to read (a DHT22 returns NaN) or send `None`.
+`datetime`, `UUID` and enum values go out as text; anything else JSON can't hold raises `ValueError`.
 
 ## While offline
 
