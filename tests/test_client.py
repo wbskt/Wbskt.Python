@@ -530,3 +530,16 @@ async def test_stop_with_a_flush_timeout_sends_the_backlog_first(api, socket_ser
 
     assert (await socket_server.next())["type"] == protocol.CAPABILITIES
     assert (await socket_server.next())["payload"] == {"celsius": 20}
+
+
+async def test_flush_without_a_timeout_returns_when_the_client_stops_for_good(api, socket_server, no_jitter):
+    from wbskt import AsyncWbsktClient, MemoryStorage
+
+    # No credentials and no PIN: the client stops with RegistrationRequired and can never drain.
+    client = AsyncWbsktClient("test-client", None, api_url=api.url, socket_url=socket_server.url,
+                              storage=MemoryStorage(), reconnect_policy=no_jitter)
+    await client.send("temperature", {"celsius": 20})
+    await client.start()
+
+    assert await asyncio.wait_for(client.flush(), 5) is False
+    await client.stop()
