@@ -6,15 +6,20 @@ Follows Docs/Client.Protocol.md in wbskt/Wbskt; its conformance suite (Tests/Con
 import asyncio
 import collections
 import concurrent.futures
+import decimal
+import enum
 import inspect
 import json
 import logging
 import math
+import numbers
 import platform
 import re
 import threading
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import date, datetime, timezone
+from datetime import time as dt_time
 from typing import Any, Awaitable, Callable, Deque, Dict, Iterable, List, Optional, Tuple, Union
 
 from websockets.asyncio.client import ClientConnection, connect
@@ -665,7 +670,31 @@ def _encode(message_type: str, payload: Any, sent_at: Optional[str] = None) -> s
     message: Dict[str, Any] = {"type": message_type, "payload": payload}
     if sent_at is not None:
         message["sentAt"] = sent_at
-    return json.dumps(message, separators=(",", ":"), default=str)
+    try:
+        # allow_nan=False: NaN and Infinity aren't JSON, and the gateway drops the whole message for them.
+        # ensure_ascii=False: the 64 KB limit counts UTF-8 bytes, not \u escapes.
+        return json.dumps(message, separators=(",", ":"), default=_json_default, allow_nan=False, ensure_ascii=False)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"payload can't be sent as JSON: {error}") from error
+
+
+def _json_default(value: Any) -> Any:
+    """Numbers stay numbers (numpy scalars, Decimal), so readings are charted rather than stored as text."""
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, (numbers.Real, decimal.Decimal)):
+        return float(value)
+    item = getattr(value, "item", None)
+    if callable(item):
+        # A numpy scalar that isn't registered as a number, such as numpy.bool_.
+        return item()
+    if isinstance(value, (datetime, date, dt_time)):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, enum.Enum):
+        return value.value
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
 
 
 def _now() -> str:
