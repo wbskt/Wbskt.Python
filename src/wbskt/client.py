@@ -46,12 +46,7 @@ class _Throttled(Exception):
 
 
 class _LoginRefused(Exception):
-    """Login said no for now (pending approval, revoked): retry on the schedule."""
-
-
-class _RegistrationRefused(_LoginRefused):
-    """Registration said no (a full plan or policy, a disabled policy, a wrong PIN): retried, but logged
-    as a warning, since the board will not come online until someone acts on it."""
+    """Login or registration said no for now (pending approval, revoked, a full policy): retry on the schedule."""
 
 
 class AsyncWbsktClient:
@@ -112,6 +107,8 @@ class AsyncWbsktClient:
         self._dispatch_task: Optional["asyncio.Task[None]"] = None
         self._error: Optional[BaseException] = None
         self._attempted: Optional[asyncio.Event] = None
+        # The last failure logged at WARNING, so a retry that fails the same way logs at INFO instead.
+        self._last_failure: Optional[str] = None
 
     @property
     def connected(self) -> bool:
@@ -237,16 +234,15 @@ class AsyncWbsktClient:
                     return
                 except asyncio.CancelledError:
                     raise
-                except _RegistrationRefused as error:
-                    self._attempt_finished()
-                    delay = self._policy.retry_delay(failures)
-                    failures += 1
-                    log.warning("wbskt: %s; retrying in %.1fs", error, delay)
                 except Exception as error:  # network, refused login, bad upgrade: all retried
                     self._attempt_finished()
                     delay = self._policy.retry_delay(failures)
                     failures += 1
-                    log.info("wbskt: connect failed (%s); retrying in %.1fs", error, delay)
+                    reason = str(error) or type(error).__name__
+                    # Once per distinct failure: a wrong URL or a pending approval shouldn't flood the log.
+                    level = logging.INFO if reason == self._last_failure else logging.WARNING
+                    self._last_failure = reason
+                    log.log(level, "wbskt: connect failed (%s); retrying in %.1fs", reason, delay)
         finally:
             self._connected = self._drained = False
             self._ws = None
@@ -292,6 +288,7 @@ class AsyncWbsktClient:
             # Connected once the server knows what this client accepts, not once the backlog is
             # out: a long backlog drains at the paced rate, and the app should not wait for it.
             self._connected = True
+            self._last_failure = None
             self._attempt_finished()
             log.info("wbskt: connected as %s", self.client_name)
             # The backlog drains while pings are answered.
@@ -406,7 +403,7 @@ class AsyncWbsktClient:
                 f"deleted or its secret rotated in the console. If it was rotated, save the new secret to "
                 f"{where} with the same client id; to register again with the PIN, remove that file"
             )
-        raise _LoginRefused(f"login answered {status} {code or ''}".strip())
+        raise _LoginRefused(_refusal("login", status, body))
 
     async def _register(self) -> Tuple[str, str]:
         if not self.policy_pin:
@@ -416,9 +413,10 @@ class AsyncWbsktClient:
             raise _Throttled(_retry_after(headers))
         if status not in (200, 201) or not isinstance(body, dict) or not body.get("clientRefId"):
             code = body.get("code") if isinstance(body, dict) else None
-            detail = body.get("detail") if isinstance(body, dict) else None
-            message = f"registration answered {status} {code or ''}".strip()
-            raise _RegistrationRefused(f"{message}: {detail}" if detail else message)
+            if code in protocol.FATAL_REGISTRATION_CODES:
+                # A wrong or missing PIN: retrying with the same one can never work.
+                raise WbsktError(f"{_refusal('registration', status, body)}. Check the policy PIN in the console (Policies)")
+            raise _LoginRefused(_refusal("registration", status, body))
 
         client_ref_id, secret = str(body["clientRefId"]), str(body["secret"])
         # Kept before saving, so a failed save can't lead to a second registration in this process.
@@ -591,6 +589,18 @@ async def _call(handler: Optional[Handler], *args: Any) -> None:
 
 async def _post(url: str, body: Dict[str, Any]):
     return await asyncio.get_running_loop().run_in_executor(None, _http.post_json, url, body)
+
+
+def _refusal(step: str, status: int, body: Any) -> str:
+    """``registration answered 404 POLICY_NOT_FOUND: Invalid registration PIN.``, from the Problem Details."""
+    text = f"{step} answered {status}"
+    if isinstance(body, dict):
+        if body.get("code"):
+            text += f" {body['code']}"
+        detail = body.get("detail") or body.get("title")
+        if detail:
+            text += f": {detail}"
+    return text
 
 
 def _check_type(message_type: str) -> None:

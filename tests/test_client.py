@@ -75,6 +75,30 @@ async def test_stops_and_keeps_the_credentials_when_they_are_no_longer_valid(api
     assert storage.load() == ("old-ref", "old-secret")
 
 
+async def test_a_wrong_pin_stops_the_client_with_the_servers_reason(api, socket_server, no_jitter):
+    api.register_answers = [(404, {"code": "POLICY_NOT_FOUND", "detail": "Invalid registration PIN."}, {})]
+    client = make_client(api, socket_server, no_jitter)
+    await client.start()
+
+    with pytest.raises(WbsktError, match="404 POLICY_NOT_FOUND: Invalid registration PIN"):
+        await client.wait_closed()
+    assert len(api.registrations) == 1
+
+
+async def test_a_refusal_is_a_warning_once_and_then_info(api, socket_server, no_jitter, caplog):
+    refusal = (401, {"code": "CLIENT_NOT_REGISTERED", "detail": "Client registration is Pending. Access denied."}, {})
+    api.login_answers = [refusal, refusal]
+    client = make_client(api, socket_server, no_jitter, storage=MemoryStorage("ref", "secret"))
+    with caplog.at_level(logging.INFO, logger="wbskt"):
+        await client.start()
+        await socket_server.wait_connections(1, timeout=15)
+        await client.stop()
+
+    failures = [r for r in caplog.records if "connect failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING, logging.INFO]
+    assert "CLIENT_NOT_REGISTERED: Client registration is Pending" in failures[0].getMessage()
+
+
 class _UnwritableStorage(MemoryStorage):
     def save(self, client_ref_id: str, secret: str) -> None:
         raise PermissionError(13, "Permission denied")

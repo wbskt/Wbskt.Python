@@ -147,6 +147,29 @@ they run on the client's background thread, so keep them short.
 Messages are at most 64 KB, and types starting with `sys.`, `capabilities` and `state.report` are
 reserved; `send` raises `ValueError` for either.
 
+## Troubleshooting
+
+The client logs on the `wbskt` logger. A script that sets up no logging shows only warnings and
+errors, which is where every refusal goes: the first time an attempt fails a given way it is a
+warning, and the same failure on the retries after it is logged at INFO. To see every attempt:
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+```
+
+| What the log says | Why, and what to do |
+|---|---|
+| `registration answered 404 POLICY_NOT_FOUND` | The PIN matches no policy. The client stops with `WbsktError`: check the PIN in the console (**Policies**). |
+| `registration answered 400 REGISTRATION_PIN_REQUIRED` | The PIN was empty. The client stops with `WbsktError`. |
+| `registration answered 403 POLICY_DISABLED` | The policy is turned off. Turn it on in the console; the client retries. |
+| `registration answered 400 POLICY_LIMIT_REACHED` or `409 PLAN_CLIENT_LIMIT_REACHED` | The policy or the plan is full. Remove a client you no longer use; the client retries. |
+| `login answered 401 CLIENT_NOT_REGISTERED` | Waiting for approval, or revoked or rejected. Approve it in the console; the client retries. |
+| `CredentialsRejected` / `CLIENT_UNAUTHORIZED` | The client was deleted or its secret rotated. See [above](#secret-rotated-or-client-deleted). |
+| `connect failed (<urlopen error ...>)` | No server at `api_url`, no network, or a TLS error. Check the URL; the client retries. |
+| `rate limited` | Too many logins from your address. The client waits as the server asks. |
+| `no stored credentials and no policy PIN` | First run without a PIN. Pass the policy PIN. |
+
 ## Protocol
 
 The SDK implements [the client protocol](https://github.com/wbskt/Wbskt/blob/master/Docs/Client.Protocol.md)

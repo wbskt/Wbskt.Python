@@ -20,6 +20,9 @@ REFUSED_EXPIRED = "expired"
 REGISTERED = 1
 PENDING = 0
 
+# Registration answers no retry with the same PIN can fix: a wrong PIN, or none.
+FATAL_REGISTRATION_CODES = ("POLICY_NOT_FOUND", "REGISTRATION_PIN_REQUIRED")
+
 API_PREFIX = "/api/v1"
 REGISTER_PATH = API_PREFIX + "/client-registrations/initiate"
 LOGIN_PATH = API_PREFIX + "/client-auth/login"
