@@ -6,7 +6,7 @@ import pytest
 
 from websockets.asyncio.server import serve
 
-from conftest import FakeSocket, NoJitter
+from conftest import FakeSocket, NoJitter, UnwritableStorage
 from wbskt import CredentialsNotSaved, MemoryStorage, ReconnectPolicy, RegistrationRequired, WbsktClient, protocol
 
 
@@ -236,19 +236,10 @@ def test_start_raises_when_no_retry_can_help(api):
         socket.__exit__()
 
 
-class _UnwritableStorage(MemoryStorage):
-    writable = False
-
-    def save(self, client_ref_id: str, secret: str) -> None:
-        if not self.writable:
-            raise PermissionError(13, "Permission denied")
-        super().save(client_ref_id, secret)
-
-
 def test_credentials_not_saved_are_saved_by_the_next_start_instead_of_registering_again(api):
     socket = ThreadedSocket()
     fake = socket.__enter__()
-    storage = _UnwritableStorage()
+    storage = UnwritableStorage()
     client = WbsktClient("sync-client", "483920", api_url=api.url, socket_url=fake.url, storage=storage)
     try:
         with pytest.raises(CredentialsNotSaved):

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from conftest import eventually, make_client
+from conftest import UnwritableStorage, eventually, make_client
 from wbskt import Command, CredentialsNotSaved, CredentialsRejected, MemoryStorage, Parameter, RegistrationRequired, WbsktError, protocol
 from wbskt.models import DataType
 
@@ -104,17 +104,8 @@ async def test_a_refusal_is_a_warning_once_and_then_info(api, socket_server, no_
     assert "CLIENT_NOT_REGISTERED: Client registration is Pending" in failures[0].getMessage()
 
 
-class _UnwritableStorage(MemoryStorage):
-    writable = False
-
-    def save(self, client_ref_id: str, secret: str) -> None:
-        if not self.writable:
-            raise PermissionError(13, "Permission denied")
-        super().save(client_ref_id, secret)
-
-
 async def test_a_failed_save_stops_the_client_instead_of_registering_again(api, socket_server, no_jitter):
-    client = make_client(api, socket_server, no_jitter, storage=_UnwritableStorage())
+    client = make_client(api, socket_server, no_jitter, storage=UnwritableStorage())
     await client.start()
 
     with pytest.raises(WbsktError, match="can't save its credentials"):
@@ -123,7 +114,7 @@ async def test_a_failed_save_stops_the_client_instead_of_registering_again(api, 
 
 
 async def test_credentials_kept_in_memory_survive_a_failed_login(api, socket_server, no_jitter):
-    storage = _UnwritableStorage()
+    storage = UnwritableStorage()
     client = make_client(api, socket_server, no_jitter, storage=storage)
     client._credentials = ("ref", "secret")
     api.login_answers = [(503, {}, {})]
@@ -173,7 +164,7 @@ async def test_credentials_cleared_after_a_refusal_register_again_on_the_next_st
 
 
 async def test_credentials_not_saved_are_saved_before_the_next_start_logs_in(api, socket_server, no_jitter):
-    storage = _UnwritableStorage()
+    storage = UnwritableStorage()
     client = make_client(api, socket_server, no_jitter, storage=storage)
     await client.start()
     with pytest.raises(CredentialsNotSaved) as refused:

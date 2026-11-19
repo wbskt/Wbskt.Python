@@ -38,8 +38,8 @@ waits and connects once someone approves it in the console. That folder must be 
 credentials can't be saved, or a credentials file is there but can't be read, the client stops with
 a `WbsktError` naming the path rather than registering a second client (`CredentialsNotSaved` when
 it registered but couldn't save: fix the folder and start the same client again, and it saves the
-credentials before it connects). Under a read-only root or a
-sandboxed service, pass `storage=FileStorage(path)` with a writable path.
+credentials before it connects). Under a read-only root or a sandboxed service, pass
+`storage=FileStorage(path)` with a writable path.
 
 `start()` returns once the first connection attempt has finished; a failed one is retried in the
 background. The client runs on a daemon thread, so it stops when your script ends: keep the script
