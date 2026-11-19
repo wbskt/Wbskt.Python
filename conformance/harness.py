@@ -59,7 +59,7 @@ async def main() -> None:
     client.on_message = on_message
 
     await client.start()
-    emit("started")
+    emit("started", closeCodes=True)
 
     lines: "asyncio.Queue[str]" = asyncio.Queue()
     reader = asyncio.ensure_future(read_lines(lines))
