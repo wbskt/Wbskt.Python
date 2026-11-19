@@ -312,7 +312,11 @@ class AsyncWbsktClient:
             self._ws = None
             await ws.close()
             if was_connected:
-                await _call(self.on_disconnected)
+                # A raising handler must not hide the close code the reconnect loop needs.
+                try:
+                    await _call(self.on_disconnected)
+                except Exception:
+                    log.exception("wbskt: on_disconnected raised")
 
         # Through the protocol object: Connection.close_code only arrived in websockets 13.1.
         return ws.protocol.close_code

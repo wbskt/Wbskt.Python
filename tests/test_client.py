@@ -396,6 +396,25 @@ async def test_a_revoked_close_logs_in_again_before_reconnecting(api, socket_ser
     assert len(api.logins) == 2
 
 
+async def test_a_raising_on_disconnected_still_reconnects_by_the_close_code(api, socket_server, no_jitter, caplog):
+    client = make_client(api, socket_server, no_jitter)
+
+    def boom():
+        raise RuntimeError("handler failed")
+
+    client.on_disconnected = boom
+    await client.start()
+    first = await socket_server.wait_connections(1)
+    await first.close(code=protocol.CLOSE_REVOKED, reason="revoked")
+
+    await socket_server.wait_connections(2)
+    await client.stop()
+
+    # The revoked close was still read, so the client logged in again.
+    assert len(api.logins) == 2
+    assert "on_disconnected raised" in caplog.text
+
+
 async def test_a_superseded_close_keeps_the_token(api, socket_server, no_jitter):
     client = make_client(api, socket_server, no_jitter)
     await client.start()
