@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from conftest import eventually, make_client
-from wbskt import Command, MemoryStorage, Parameter, RegistrationRequired, protocol
+from wbskt import Command, MemoryStorage, Parameter, RegistrationRequired, WbsktError, protocol
 from wbskt.models import DataType
 
 
@@ -71,6 +71,33 @@ async def test_registers_again_when_the_credentials_are_no_longer_valid(api, soc
 
     assert len(api.registrations) == 1
     assert storage.load()[0] != "old-ref"
+
+
+class _UnwritableStorage(MemoryStorage):
+    def save(self, client_ref_id: str, secret: str) -> None:
+        raise PermissionError(13, "Permission denied")
+
+
+async def test_a_failed_save_stops_the_client_instead_of_registering_again(api, socket_server, no_jitter):
+    client = make_client(api, socket_server, no_jitter, storage=_UnwritableStorage())
+    await client.start()
+
+    with pytest.raises(WbsktError, match="can't save its credentials"):
+        await client.wait_closed()
+    assert len(api.registrations) == 1
+
+
+async def test_credentials_kept_in_memory_survive_a_failed_login(api, socket_server, no_jitter):
+    storage = _UnwritableStorage()
+    client = make_client(api, socket_server, no_jitter, storage=storage)
+    client._credentials = ("ref", "secret")
+    api.login_answers = [(503, {}, {})]
+    await client.start()
+    await socket_server.wait_connections(1)
+    await client.stop()
+
+    assert api.registrations == []
+    assert [login["clientRefId"] for login in api.logins] == ["ref", "ref"]
 
 
 async def test_waits_for_retry_after_when_throttled(api, socket_server, no_jitter):

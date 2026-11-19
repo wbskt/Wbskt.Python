@@ -34,7 +34,10 @@ while True:
 Get the PIN from a registration policy in the console (**Policies**). The first run registers the
 client and stores its credentials in your user data folder (`~/.local/share/wbskt/<name>.json` on
 Linux), so later runs sign in without registering again. If the policy needs approval, the client
-waits and connects once someone approves it in the console.
+waits and connects once someone approves it in the console. That folder must be writable: if the
+credentials can't be saved, or a credentials file is there but can't be read, the client stops with
+a `WbsktError` naming the path rather than registering a second client. Under a read-only root or a
+sandboxed service, pass `storage=FileStorage(path)` with a writable path.
 
 `start()` returns once the first connection attempt has finished; a failed one is retried in the
 background. The client runs on a daemon thread, so it stops when your script ends: keep the script
