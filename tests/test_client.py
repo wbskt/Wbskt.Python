@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from conftest import eventually, make_client
-from wbskt import Command, MemoryStorage, Parameter, RegistrationRequired, WbsktError, protocol
+from wbskt import Command, CredentialsRejected, MemoryStorage, Parameter, RegistrationRequired, WbsktError, protocol
 from wbskt.models import DataType
 
 
@@ -61,16 +61,17 @@ async def test_logs_in_again_when_the_socket_refuses_the_token(api, socket_serve
     assert socket_server.tokens == ["token-1", "token-2"]
 
 
-async def test_registers_again_when_the_credentials_are_no_longer_valid(api, socket_server, no_jitter):
+async def test_stops_and_keeps_the_credentials_when_they_are_no_longer_valid(api, socket_server, no_jitter):
     storage = MemoryStorage("old-ref", "old-secret")
     api.login_answers = [(401, {"code": "CLIENT_UNAUTHORIZED"}, {})]
     client = make_client(api, socket_server, no_jitter, storage=storage)
     await client.start()
-    await socket_server.wait_connections(1)
-    await client.stop()
 
-    assert len(api.registrations) == 1
-    assert storage.load()[0] != "old-ref"
+    with pytest.raises(CredentialsRejected, match="old-ref"):
+        await client.wait_closed()
+    assert api.registrations == []
+    assert len(api.logins) == 1
+    assert storage.load() == ("old-ref", "old-secret")
 
 
 class _UnwritableStorage(MemoryStorage):

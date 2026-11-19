@@ -109,6 +109,28 @@ Send only what changed. Numbers are kept as readings and charted in the console.
 default, `offline_buffer_size=`) and go out in order, with the time they were made, once the
 connection is back. Workflows can tell those late readings from live ones.
 
+## Secret rotated or client deleted
+
+When someone rotates the client's secret or deletes the client in the console, login refuses the
+stored credentials. The client then stops with `CredentialsRejected` (logged on the `wbskt` logger and
+raised from `start()`, `wait_closed()` and `run_forever()`) and keeps its credentials file. It never
+registers again by itself: a deleted device would come back as a new client, and a rotated one would
+stay offline beside a duplicate.
+
+- **Secret rotated:** save the new secret from the console beside the same client id, then start again.
+
+  ```python
+  from wbskt import FileStorage
+
+  storage = FileStorage.for_client("greenhouse-sensor")
+  client_ref_id, _ = storage.load()
+  storage.save(client_ref_id, "the-new-secret")
+  ```
+
+- **Register again** (the client was deleted, or you point it at a fresh install): delete the
+  credentials file (`FileStorage.for_client("greenhouse-sensor").clear()`). The next start registers
+  with the PIN as a new client.
+
 ## Options
 
 | Option | Default | |
