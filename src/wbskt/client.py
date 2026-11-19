@@ -139,22 +139,23 @@ class AsyncWbsktClient:
         Returns True when nothing is left queued. While offline the queue can't drain, so give a
         timeout unless the client is sure to connect.
         """
-        if self._run_task is None or self._send_lock is None:
+        run, lock = self._run_task, self._send_lock
+        if run is None or lock is None:
             return not self._buffer
-        lock = self._send_lock
 
-        async def sent() -> None:
-            while True:
+        async def sent() -> bool:
+            # A client stopped by an error no retry fixes will never drain, so stop waiting with it.
+            while not run.done():
                 if self._drained and not self._buffer:
                     # Taking the lock waits for a send already under way to finish.
                     async with lock:
                         if self._drained and not self._buffer:
-                            return
+                            return True
                 await asyncio.sleep(_FLUSH_POLL)
+            return not self._buffer
 
         try:
-            await asyncio.wait_for(sent(), timeout)
-            return True
+            return await asyncio.wait_for(sent(), timeout)
         except asyncio.TimeoutError:
             return False
 
