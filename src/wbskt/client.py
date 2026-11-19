@@ -40,6 +40,7 @@ DEFAULT_SOCKET_URL = "wss://ws.dev.wbskt.com"
 TOKEN_RENEW_BEFORE = 60.0
 _ISO_TIME = re.compile(r"(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?P<fraction>\.\d+)?(?P<zone>Z|[+-]\d{2}:\d{2})?$", re.IGNORECASE)
 OFFLINE_BUFFER_SIZE = 1000
+_FLUSH_POLL = 0.05
 
 Handler = Callable[..., Union[None, Awaitable[None]]]
 
@@ -132,7 +133,38 @@ class AsyncWbsktClient:
         self._dispatch_task = asyncio.ensure_future(self._dispatch())
         self._run_task = asyncio.ensure_future(self._run())
 
-    async def stop(self) -> None:
+    async def flush(self, timeout: Optional[float] = None) -> bool:
+        """Wait until every queued message has gone out, or ``timeout`` seconds pass.
+
+        Returns True when nothing is left queued. While offline the queue can't drain, so give a
+        timeout unless the client is sure to connect.
+        """
+        if self._run_task is None or self._send_lock is None:
+            return not self._buffer
+        lock = self._send_lock
+
+        async def sent() -> None:
+            while True:
+                if self._drained and not self._buffer:
+                    # Taking the lock waits for a send already under way to finish.
+                    async with lock:
+                        if self._drained and not self._buffer:
+                            return
+                await asyncio.sleep(_FLUSH_POLL)
+
+        try:
+            await asyncio.wait_for(sent(), timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def stop(self, flush_timeout: Optional[float] = None) -> None:
+        """Disconnect and stop. With ``flush_timeout``, first wait up to that long for queued messages.
+
+        A warning says how many messages were still queued. They stay queued for the next ``start()``.
+        """
+        if flush_timeout is not None and self._run_task is not None:
+            await self.flush(flush_timeout)
         if self._stopping is not None:
             self._stopping.set()
         ws = self._ws
@@ -146,6 +178,8 @@ class AsyncWbsktClient:
                 except (asyncio.CancelledError, Exception):
                     pass
         self._run_task = self._dispatch_task = None
+        if self._buffer:
+            log.warning("wbskt: stopped with %d queued message(s) unsent", len(self._buffer))
 
     async def wait_first_attempt(self) -> None:
         """Wait until the first connection attempt has finished, connected or not.
@@ -511,7 +545,24 @@ class WbsktClient:
             self.stop()
             raise
 
-    def stop(self) -> None:
+    def flush(self, timeout: Optional[float] = None) -> bool:
+        """Wait until every queued message has gone out, or ``timeout`` seconds pass.
+
+        Returns True when nothing is left queued. It can't be called from a handler, which runs on
+        the thread that does the sending.
+        """
+        if self._on_loop():
+            raise RuntimeError("flush() can't be called from a handler")
+        client = self._client
+        if client is None or self._thread is None:
+            return True
+        return bool(self._wait(client.flush(timeout)))
+
+    def stop(self, flush_timeout: Optional[float] = None) -> None:
+        """Disconnect and stop. With ``flush_timeout``, first wait up to that long for queued messages.
+
+        Messages still queued when the client stops are discarded, and a warning says how many.
+        """
         thread, client = self._thread, self._client
         if thread is None or client is None:
             return
@@ -521,12 +572,12 @@ class WbsktClient:
             self._stopped_thread = thread
             loop = self._loop
             assert loop is not None
-            future = asyncio.ensure_future(client.stop(), loop=loop)
+            future = asyncio.ensure_future(client.stop(flush_timeout), loop=loop)
             future.add_done_callback(lambda _: loop.stop())
             return
         loop = self._loop
         assert loop is not None
-        self._wait(client.stop())
+        self._wait(client.stop(flush_timeout))
         loop.call_soon_threadsafe(loop.stop)
         thread.join()
 

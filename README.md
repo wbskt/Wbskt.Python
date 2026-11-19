@@ -112,6 +112,20 @@ Send only what changed. Numbers are kept as readings and charted in the console;
 default, `offline_buffer_size=`) and go out in order, with the time they were made, once the
 connection is back. Workflows can tell those late readings from live ones.
 
+A script that sends once and exits should wait for the queue before it stops, or a reading made
+while the first connection attempt was failing is lost:
+
+```python
+client = WbsktClient("greenhouse-sensor", policy_pin="483920")
+client.start()
+client.send("temperature", {"celsius": 21.5})
+client.stop(flush_timeout=10)  # waits up to 10 s for queued messages to go out
+```
+
+`flush(timeout)` waits the same way without stopping and returns whether everything went out
+(`await client.flush(timeout)` on `AsyncWbsktClient`). `stop()` logs a warning naming how many
+queued messages were still unsent.
+
 ## Secret rotated or client deleted
 
 When someone rotates the client's secret or deletes the client in the console, login refuses the
