@@ -26,7 +26,8 @@ classifiers = [
   "Topic :: Home Automation",
   "Framework :: AsyncIO",
 ]
-dependencies = ["websockets>=13"]
+# Capped below the next major, which CI has not run; the weekly CI run tries the newest one.
+dependencies = ["websockets>=13,<18"]
 
 [project.urls]
 Homepage = "https://wbskt.com"
