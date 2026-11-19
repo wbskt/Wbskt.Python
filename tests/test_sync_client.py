@@ -277,3 +277,45 @@ def test_calls_after_stop_raise_instead_of_hanging_and_start_works_again(api):
         client.stop()
     finally:
         socket.__exit__(None, None, None)
+
+
+def test_a_one_shot_script_flushes_before_it_stops(api):
+    socket = ThreadedSocket()
+    fake = socket.__enter__()
+    client = _client(api, fake)
+    try:
+        client.start()
+        client.send("temperature", {"celsius": 21.5})
+        assert client.flush(5) is True
+        client.stop(flush_timeout=5)
+        assert socket.next()["type"] == protocol.CAPABILITIES
+        assert socket.next()["payload"] == {"celsius": 21.5}
+    finally:
+        client.stop()
+        socket.__exit__()
+
+
+def test_flush_from_a_handler_is_refused(api):
+    socket = ThreadedSocket()
+    fake = socket.__enter__()
+    client = _client(api, fake)
+    errors = []
+
+    def handle(message) -> None:
+        try:
+            client.flush(1)
+        except RuntimeError as error:
+            errors.append(error)
+
+    client.on_message = handle
+    try:
+        client.start()
+        assert socket.next()["type"] == protocol.CAPABILITIES
+        socket.send('{"type":"hello","payload":null}')
+        deadline = time.monotonic() + 5
+        while not errors and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert errors
+    finally:
+        client.stop()
+        socket.__exit__()

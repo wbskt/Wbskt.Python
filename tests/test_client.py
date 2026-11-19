@@ -489,3 +489,44 @@ class _FakeInt:
 
 
 numbers.Integral.register(_FakeInt)
+
+
+async def test_flush_waits_for_the_backlog_to_go_out(api, socket_server, no_jitter, caplog):
+    client = make_client(api, socket_server, no_jitter)
+    await client.send("temperature", {"celsius": 20})
+    assert await client.flush(0.1) is False  # not started: nothing can leave
+
+    await client.start()
+    assert await client.flush(5) is True
+    await client.stop()
+
+    assert (await socket_server.next())["type"] == protocol.CAPABILITIES
+    assert (await socket_server.next())["payload"] == {"celsius": 20}
+    assert "unsent" not in caplog.text
+
+
+async def test_flush_gives_up_while_offline_and_stop_says_what_was_left(api, no_jitter, caplog):
+    from wbskt import AsyncWbsktClient, MemoryStorage
+
+    client = AsyncWbsktClient("test-client", "483920", api_url=api.url, socket_url="ws://127.0.0.1:1",
+                              storage=MemoryStorage(), reconnect_policy=no_jitter)
+    await client.start()
+    await client.wait_first_attempt()
+    await client.send("temperature", {"celsius": 20})
+    await client.send("temperature", {"celsius": 21})
+
+    assert await client.flush(0.2) is False
+    with caplog.at_level(logging.WARNING, logger="wbskt"):
+        await client.stop(flush_timeout=0.1)
+
+    assert "stopped with 2 queued message(s) unsent" in caplog.text
+
+
+async def test_stop_with_a_flush_timeout_sends_the_backlog_first(api, socket_server, no_jitter):
+    client = make_client(api, socket_server, no_jitter)
+    await client.send("temperature", {"celsius": 20})
+    await client.start()
+    await client.stop(flush_timeout=5)
+
+    assert (await socket_server.next())["type"] == protocol.CAPABILITIES
+    assert (await socket_server.next())["payload"] == {"celsius": 20}
