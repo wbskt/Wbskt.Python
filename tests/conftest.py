@@ -114,6 +114,28 @@ async def socket_server():
         yield fake
 
 
+class UnwritableStorage:
+    """Storage in a read-only folder until ``writable`` is set."""
+
+    writable = False
+
+    def __init__(self) -> None:
+        from wbskt import MemoryStorage
+
+        self._inner = MemoryStorage()
+
+    def load(self):
+        return self._inner.load()
+
+    def save(self, client_ref_id: str, secret: str) -> None:
+        if not self.writable:
+            raise PermissionError(13, "Permission denied")
+        self._inner.save(client_ref_id, secret)
+
+    def clear(self) -> None:
+        self._inner.clear()
+
+
 class NoJitter:
     def random(self) -> float:
         return 0.0
