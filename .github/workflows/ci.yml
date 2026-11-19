@@ -5,6 +5,9 @@ on:
   push:
     branches: [master]
   workflow_call:
+  # Weekly, so a websockets release that breaks the client shows here before a user meets it.
+  schedule:
+    - cron: '17 4 * * 1'
 
 permissions:
   contents: read
@@ -33,6 +36,20 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e '.[test]' '${{ matrix.websockets }}'
+      - run: python -m pytest -q
+
+  # The newest websockets, past the cap in pyproject.toml, so the next major is tried before the cap
+  # is raised. Only on the weekly run: a failure here says to fix the client, not that a PR broke it.
+  newest-websockets:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.14'
+      - run: pip install -e '.[test]' && pip install --upgrade websockets
+      - run: python -c "import websockets; print('websockets', websockets.__version__)"
       - run: python -m pytest -q
 
   conformance:
