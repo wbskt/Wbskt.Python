@@ -5,6 +5,7 @@ Follows Docs/Client.Protocol.md in wbskt/Wbskt; its conformance suite (Tests/Con
 
 import asyncio
 import collections
+import concurrent.futures
 import inspect
 import json
 import logging
@@ -461,7 +462,8 @@ class WbsktClient:
     """
 
     def __init__(self, client_name: str, policy_pin: Optional[str] = None, **options: Any) -> None:
-        self._loop = asyncio.new_event_loop()
+        # A loop per start(): stop() closes it, with the threads its HTTP calls ran on.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._stopped_thread: Optional[threading.Thread] = None
         self._options = (client_name, policy_pin, options)
@@ -488,7 +490,9 @@ class WbsktClient:
             # Stopped from a handler: its loop has to finish stopping before it can run again.
             self._stopped_thread.join()
             self._stopped_thread = None
-        self._thread = threading.Thread(target=self._loop.run_forever, name="wbskt", daemon=True)
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=_run_loop, args=(self._loop,), name="wbskt", daemon=True)
         self._thread.start()
         self._client = self._wait(self._create())
         self._wait(self._client.start())
@@ -506,11 +510,15 @@ class WbsktClient:
         if self._on_loop():
             # From a handler: the loop can't wait for itself, so it stops once this handler returns.
             self._stopped_thread = thread
-            future = asyncio.ensure_future(client.stop(), loop=self._loop)
-            future.add_done_callback(lambda _: self._loop.stop())
+            loop = self._loop
+            assert loop is not None
+            future = asyncio.ensure_future(client.stop(), loop=loop)
+            future.add_done_callback(lambda _: loop.stop())
             return
+        loop = self._loop
+        assert loop is not None
         self._wait(client.stop())
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        loop.call_soon_threadsafe(loop.stop)
         thread.join()
 
     def run_forever(self) -> None:
@@ -549,6 +557,8 @@ class WbsktClient:
     def _require_client(self) -> AsyncWbsktClient:
         if self._client is None:
             raise RuntimeError("call start() first")
+        if self._thread is None:
+            raise RuntimeError("the client is stopped; call start() to connect again")
         return self._client
 
     def _call(self, coroutine: Awaitable[Any]) -> None:
@@ -564,14 +574,40 @@ class WbsktClient:
         if self._on_loop():
             coroutine.close()  # type: ignore[attr-defined]
             raise RuntimeError("this can't be called from a handler")
-        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()  # type: ignore[arg-type]
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            coroutine.close()  # type: ignore[attr-defined]
+            raise RuntimeError("the client is stopped; call start() to connect again")
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)  # type: ignore[arg-type]
+        # A loop that stops before it runs the call never completes it, so look up now and then
+        # rather than wait for ever: a send racing stop() on another thread raises instead.
+        while True:
+            try:
+                return future.result(timeout=0.5)
+            except concurrent.futures.TimeoutError:
+                if not loop.is_running() and not future.done():
+                    future.cancel()
+                    raise RuntimeError("the client is stopped; call start() to connect again") from None
 
     def _on_loop(self) -> bool:
         """Whether the caller is the client's own loop: a handler, even one that runs during stop()."""
         try:
-            return asyncio.get_running_loop() is self._loop
+            return self._loop is not None and asyncio.get_running_loop() is self._loop
         except RuntimeError:
             return False
+
+
+def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """The client thread: run the loop until stop(), then close it and the threads its HTTP calls use."""
+    executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="wbskt-http")
+    loop.set_default_executor(executor)
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_forever()
+    finally:
+        # Not waited for: an HTTP call in flight finishes (or times out) on its own, and nothing reads it.
+        executor.shutdown(wait=False)
+        loop.close()
 
 
 def _log_failure(task: "asyncio.Future[Any]") -> None:
