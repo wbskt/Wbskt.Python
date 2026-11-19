@@ -107,7 +107,7 @@ class AsyncWbsktClient:
         # The backlog has gone out on this connection, so a send may skip the buffer. Set after
         # _connected: until then a send queues behind the backlog to keep the order it was made in.
         self._drained = False
-        # Made in start(): on Python 3.9 they bind to the loop that exists when they're created.
+        # Made in start(), on the loop that runs the client.
         self._stopping: Optional[asyncio.Event] = None
         self._inbox: Optional["asyncio.Queue[Message]"] = None
         self._run_task: Optional["asyncio.Task[None]"] = None

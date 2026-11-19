@@ -50,6 +50,9 @@ running for as long as the client should stay connected. A script with nothing e
 import asyncio
 from wbskt import AsyncWbsktClient
 
+def read_sensor():
+    return 21.5
+
 async def main():
     client = AsyncWbsktClient("greenhouse-sensor", policy_pin="483920")
 
@@ -75,6 +78,9 @@ Tell the console which commands the client takes, and it offers them with a form
 ```python
 from wbskt import Command, DataType, Parameter, WbsktClient
 
+def set_relay(on):
+    print("relay", "on" if on else "off")
+
 relay = Command("relay.set", "Switch the relay", [Parameter("on", DataType.BOOLEAN, is_required=True)])
 client = WbsktClient("greenhouse-relay", policy_pin="483920", capabilities=[relay])
 
@@ -84,6 +90,7 @@ def handle(message):
         client.send("relay.state", {"on": message.payload["on"]})
 
 client.on_message = handle
+client.run_forever()
 ```
 
 The SDK confirms delivery of a command as soon as it arrives, before your handler runs, and refuses
@@ -108,7 +115,8 @@ Send only what changed. Numbers are kept as readings and charted in the console;
 
 ## While offline
 
-`send` never blocks on the network. While disconnected, messages wait in memory (the last 1,000 by
+`send` waits at most for the pacer (8 messages a second, after a burst of 50); it never waits for
+the network. While disconnected, messages wait in memory (the last 1,000 by
 default, `offline_buffer_size=`) and go out in order, with the time they were made, once the
 connection is back. Workflows can tell those late readings from live ones.
 
@@ -157,6 +165,8 @@ stay offline beside a duplicate.
 | `storage` | `FileStorage.for_client(name)` | `FileStorage(path)`, `MemoryStorage(ref, secret)`, or your own object with `load`, `save` and `clear`. |
 | `capabilities` | none | The commands the client takes. |
 | `offline_buffer_size` | 1000 | Messages kept while offline; the oldest go first. |
+| `firmware_version` | none | Your own code's version, shown on the client page. See [Version](#version). |
+| `reconnect_policy` | `ReconnectPolicy()` | The waits between reconnects. Pass `ReconnectPolicy(random.Random(seed))` to make the jitter repeatable in tests. |
 
 Handlers can be `on_message(message)`, `on_connected()` and `on_disconnected()`. On `WbsktClient`
 they run on the client's background thread, so keep them short.
