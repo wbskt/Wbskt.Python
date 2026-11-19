@@ -49,6 +49,11 @@ class _LoginRefused(Exception):
     """Login said no for now (pending approval, revoked): retry on the schedule."""
 
 
+class _RegistrationRefused(_LoginRefused):
+    """Registration said no (a full plan or policy, a disabled policy, a wrong PIN): retried, but logged
+    as a warning, since the board will not come online until someone acts on it."""
+
+
 class AsyncWbsktClient:
     """A client connection for asyncio code.
 
@@ -232,6 +237,11 @@ class AsyncWbsktClient:
                     return
                 except asyncio.CancelledError:
                     raise
+                except _RegistrationRefused as error:
+                    self._attempt_finished()
+                    delay = self._policy.retry_delay(failures)
+                    failures += 1
+                    log.warning("wbskt: %s; retrying in %.1fs", error, delay)
                 except Exception as error:  # network, refused login, bad upgrade: all retried
                     self._attempt_finished()
                     delay = self._policy.retry_delay(failures)
@@ -406,7 +416,9 @@ class AsyncWbsktClient:
             raise _Throttled(_retry_after(headers))
         if status not in (200, 201) or not isinstance(body, dict) or not body.get("clientRefId"):
             code = body.get("code") if isinstance(body, dict) else None
-            raise _LoginRefused(f"registration answered {status} {code or ''}".strip())
+            detail = body.get("detail") if isinstance(body, dict) else None
+            message = f"registration answered {status} {code or ''}".strip()
+            raise _RegistrationRefused(f"{message}: {detail}" if detail else message)
 
         client_ref_id, secret = str(body["clientRefId"]), str(body["secret"])
         # Kept before saving, so a failed save can't lead to a second registration in this process.
